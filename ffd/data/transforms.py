@@ -5,7 +5,6 @@ Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
-import cv2
 import numpy as np
 import torch
 from compsynth_ff import composite as _comp
@@ -19,7 +18,7 @@ _STD = torch.tensor(CLIP_STD).view(3, 1, 1)
 
 def _to_tensor(img_bgr: np.ndarray) -> torch.Tensor:
     if img_bgr.shape[:2] != (SIZE, SIZE):
-        img_bgr = cv2.resize(img_bgr, (SIZE, SIZE), interpolation=cv2.INTER_AREA)
+        raise ValueError(f"Ảnh phải {SIZE}x{SIZE}, nhận {img_bgr.shape[:2]} (không resize)")
     x = torch.from_numpy(np.ascontiguousarray(img_bgr[:, :, ::-1])).permute(2, 0, 1).float() / 255.0
     return (x - _MEAN) / _STD
 

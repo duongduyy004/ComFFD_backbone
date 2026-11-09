@@ -18,7 +18,7 @@ from compsynth_ff.guards import assert_subset
 from compsynth_ff.regions import REGIONS
 from compsynth_ff.select_cells import load_frames
 
-from .recipe import sample_recipe
+from .recipe import sample_item
 from .transforms import train_transform
 
 MAX_TRIES = 50
@@ -67,15 +67,9 @@ class ArmTrainDataset(torch.utils.data.Dataset):
         if idx % 2 == 0:
             t, f = c.real_frames[k]
             return self._item(c.read_crop(t, f, "real"), rng, False, 0, "real", "", "")
-        for _ in range(MAX_TRIES):
-            t, f = c.real_frames[k]
-            methods, vr = self._frame_info(t, f)
-            rec = sample_recipe(rng, self.arm, self.rho, methods, vr)
-            if rec is not None:
-                break
-            k = int(rng.integers(0, n))
-        else:
-            raise RuntimeError(f"Không bốc được recipe sau {MAX_TRIES} lần (arm={self.arm}, idx={idx})")
+        k, rec = sample_item(rng, self.arm, self.rho, n, lambda i: self._frame_info(*c.real_frames[i]), k,
+                             MAX_TRIES)
+        t, f = c.real_frames[k]
         if rec.source == "raw":
             return self._item(c.read_crop(t, f, rec.method), rng, False, 1, "raw", rec.method, "")
         real = c.read_crop(t, f, "real")

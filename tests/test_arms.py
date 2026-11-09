@@ -136,3 +136,10 @@ def test_build_train_dataset_arm(ffpp_synth, tmp_path):
                       total_steps=1, eval_every=1, ckpt_every=1, rho=0.25)
     ds = build_train_dataset(cfg, ff_cfg=ffpp_synth)
     assert isinstance(ds, ArmTrainDataset) and ds.rho == 0.25 and ds.seed == 3
+
+
+def test_wrong_size_raises():
+    with pytest.raises(ValueError):
+        eval_transform(np.zeros((300, 300, 3), np.uint8))
+    with pytest.raises(ValueError):
+        train_transform(np.zeros((300, 300, 3), np.uint8), np.random.default_rng(0), already_jpeg=True)
