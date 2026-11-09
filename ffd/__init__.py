@@ -1,0 +1,4 @@
+"""Package ffd: detector deepfake (CLIP ViT-L/14-336 + LoRA).
+
+Trạng thái: chưa chạy thử.
+"""

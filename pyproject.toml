@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ffd"
+version = "0.1.0"
+description = "Deepfake detector: CLIP ViT-L/14-336 + LoRA (CompFFD)"
+requires-python = ">=3.10"
+dependencies = [
+  "compsynth-ff", "torch", "transformers", "peft", "numpy", "scipy",
+  "pandas", "pyarrow", "scikit-learn", "pyyaml",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["ffd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["gpu: cần model thật/GPU; chỉ chạy với --run-gpu"]
