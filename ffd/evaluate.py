@@ -1,4 +1,4 @@
-"""Chấm điểm best.pt của một run trên tập test, ghi `scores.parquet` (mức frame, kèm cờ).
+"""Chấm điểm best.pt của một run trên tập test, ghi `scores_{dataset}.parquet` mỗi dataset (mức frame, kèm cờ).
 
 Cột: run, mode, seed, split, dataset, video_id, frame_idx, label, logit, cell, flag.
 Quy ước:
@@ -7,7 +7,8 @@ Quy ước:
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
 - Detector dựng lại từ `run_info.json["config"]` (cấu hình đầy đủ do `rundir.write_run_info` ghi; run cũ không có
   khóa này -> ValueError, không đoán).
-- ffpp_test: FFppRawCore(test), video_id = "{tid}_{src}", cell = "".
+- ffpp_test: FFppRawCore(test), video_id = "{tid}_{src}", cell = "". Video kỳ vọng (discover_targets, subset test) không còn frame keep
+  -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; video chấm được mà không thuộc tập kỳ vọng -> ValueError.
 - compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|a0ff|{region}|{borrowed or method}"
   | "{tid}|{region}|{method}"; cell = "{region}|{method}" (fake) | "a0ff" | "real"; label = L0.
 - cdf2: manifest của `prep_cross` (cross_roots[name] là thư mục chứa manifest.parquet + crops/, hoặc cha của nó
@@ -28,7 +29,7 @@ import torch
 from compsynth_ff.config import load_config
 from compsynth_ff.io_utils import read_png, write_parquet_atomic
 
-from .config import TrainConfig, file_hash
+from .config import TrainConfig, config_hash, file_hash
 from .data.transforms import eval_transform
 from .guards import allow_read
 from .model import Detector
@@ -67,6 +68,8 @@ def _check_run(run: Path) -> tuple[TrainConfig, dict]:
         now = file_hash(cfg.prereg)
         if now != info["prereg_hash"]:
             raise ValueError(f"Hash prereg khác lúc train ({info['prereg_hash']} != {now}); không chấm điểm")
+    if config_hash(cfg) != info.get("config_hash"):
+        raise ValueError(f"config dựng lại có hash {config_hash(cfg)} != config_hash trong run_info {info.get('config_hash')}")
     return cfg, info
 
 
@@ -91,17 +94,33 @@ def _frame(df: pd.DataFrame, **const) -> pd.DataFrame:
 
 def _ffpp_test(model, ff_cfg, bs, device) -> pd.DataFrame:
     from compsynth_ff.dataset import FFppRawCore
+    from compsynth_ff.pairs import discover_targets
 
     allow_read("eval", "ffpp_test")
     core = FFppRawCore(ff_cfg, "test")
     tg = [core[i]["targets"] for i in range(len(core))]  # đọc ảnh hai lần: chấp nhận cho đơn giản
     lg = _score(model, len(core), lambda i: core[i]["image"], bs, device)
-    return pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
-                         "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
+    df = pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
+                       "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
+    # Đủ video: tập kỳ vọng từ discover_targets (subset test); video không còn frame keep -> một dòng cờ.
+    expected = {}
+    for t in discover_targets(ff_cfg):
+        if t.subset == "test":
+            expected[f"{t.tid}_real"] = 0
+            for m in t.fakes:
+                expected[f"{t.tid}_{m}"] = 1
+    extra = set(df.video_id) - set(expected)
+    if extra:
+        raise ValueError(f"{len(extra)} video được chấm không thuộc tập test kỳ vọng (ví dụ {sorted(extra)[0]!r})")
+    miss = sorted(set(expected) - set(df.video_id))
+    if miss:
+        df = pd.concat([df, pd.DataFrame({"video_id": miss, "frame_idx": -1, "label": [expected[v] for v in miss],
+                                          "logit": 0.0, "cell": "", "flag": "no_usable_frame"})], ignore_index=True)
+    return df
 
 
 def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
-    from compsynth_ff.dataset import EvalCore
+    from compsynth_ff.dataset import L0_CODE, EvalCore
 
     allow_read("eval", "compsynth_test")
     core = EvalCore(ff_cfg, "test")
@@ -110,12 +129,13 @@ def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
         m = core.meta(i)
         k, tid, r, me = m["kind"], m["tid"], m["region"], m["method"]
         if k == "real":
-            v, c, lab = f"{tid}|real", "real", 0
+            v, c = f"{tid}|real", "real"
         elif k == "a0ff":
             bm = core.man["borrowed_method"].iloc[i]
-            v, c, lab = f"{tid}|a0ff|{r}|{bm if isinstance(bm, str) and bm else me}", "a0ff", 0
+            v, c = f"{tid}|a0ff|{r}|{bm if isinstance(bm, str) and bm else me}", "a0ff"
         else:
-            v, c, lab = f"{tid}|{r}|{me}", f"{r}|{me}", 1
+            v, c = f"{tid}|{r}|{me}", f"{r}|{me}"
+        lab = L0_CODE[k]  # KeyError nếu kind lạ
         vids.append(v); cells.append(c); labels.append(lab); fidx.append(m["frame_idx"])  # noqa: E702
     lg = _score(model, len(core), lambda i: core[i]["image"], bs, device)
     return pd.DataFrame({"video_id": vids, "frame_idx": fidx, "label": labels, "logit": lg,
@@ -152,7 +172,7 @@ def _cross(model, name, root, bs, device) -> pd.DataFrame:
 
 def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vision_config=None,
                  device=None, batch_size: int = 16) -> Path:
-    """Chấm điểm best.pt của `run` trên `datasets`, ghi và trả `run/scores.parquet`."""
+    """Chấm điểm best.pt của `run` trên `datasets`, ghi `run/scores_{dataset}.parquet` mỗi dataset; trả thư mục run."""
     run = Path(run)
     bad = [d for d in datasets if d not in DATASETS]
     if bad:
@@ -185,6 +205,6 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vi
     rid = f"compffd/{cfg.split}/seed{cfg.seed}" if cfg.mode == "compffd" else f"{cfg.mode}/seed{cfg.seed}"
     df = _frame(df, run=rid, mode=cfg.mode, seed=int(cfg.seed), split=cfg.split or "")
     df = df[COLUMNS].astype({"frame_idx": "int64", "label": "int64", "logit": "float64"})
-    out = run / "scores.parquet"
-    write_parquet_atomic(df, out)
-    return out
+    for ds, g in df.groupby("dataset", sort=False):  # một file mỗi dataset: chấm lại dataset nào chỉ thay file đó
+        write_parquet_atomic(g.reset_index(drop=True), run / f"scores_{ds}.parquet")
+    return run

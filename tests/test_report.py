@@ -37,7 +37,8 @@ def fake_scores(mode, seed, dataset="ffpp_test", nvid=20, split="", drop=(), fla
 def put(root, df, mode, seed, split=""):
     d = root / ("compffd" if mode == "compffd" else "aug") / (split if mode == "compffd" else mode) / f"seed{seed}"
     d.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(d / "scores.parquet", index=False)
+    for ds, g in df.groupby("dataset"):  # một file mỗi dataset, như evaluate_run
+        g.to_parquet(d / f"scores_{ds}.parquet", index=False)
 
 
 @pytest.fixture
@@ -88,10 +89,10 @@ def test_compffd_never_paired(tree):
 
 
 def test_duplicate_run_rejected(tree):
-    p = tree / "aug" / "raw" / "seed0" / "scores.parquet"
+    p = tree / "aug" / "raw" / "seed0" / "scores_ffpp_test.parquet"
     d = tree / "aug" / "dup" / "seed0"
     d.mkdir(parents=True)
-    pd.read_parquet(p).to_parquet(d / "scores.parquet", index=False)  # cùng mode/seed/dataset ở nơi khác
+    pd.read_parquet(p).to_parquet(d / "scores_ffpp_test.parquet", index=False)  # cùng mode/seed/dataset ở nơi khác
     with pytest.raises(ValueError, match="trùng"):
         build_report(tree)
 
@@ -120,4 +121,45 @@ def test_per_cell_and_mixed_datasets(tmp_path):
     s = pd.read_parquet(out / "summary.parquet")
     assert set(s.dataset) == {"ffpp_test", "compsynth_test"}
     d = pd.read_csv(out / "delong.csv")
-    assert len(d) == 3 * 2 * 2
+    assert len(d) == 2 * 2 * 3  # 2 seed x 2 dataset x 3 cặp
+
+
+def test_complete_tree_has_no_warning(tree):
+    main = (build_report(tree) / "main.md").read_text(encoding="utf-8")
+    assert "CẢNH BÁO" not in main and "⚠" not in main
+
+
+def test_missing_combinations_listed_not_raised(tmp_path):
+    # raw đủ 3 seed x 2 dataset; raw+comp thiếu seed 2 ở ffpp_test và thiếu hẳn compsynth_test (MINH HỌA)
+    for s in range(3):
+        put(tmp_path, pd.concat([fake_scores("raw", s), fake_scores("raw", s, dataset="compsynth_test", cells=True)]), "raw", s)
+    for s in range(2):
+        put(tmp_path, fake_scores("raw+comp", s), "raw+comp", s)
+    main = (build_report(tmp_path) / "main.md").read_text(encoding="utf-8")
+    head = main.split("## CẢNH BÁO", 1)[1].split("| arm", 1)[0]
+    for line in ("- raw+comp, seed 2, ffpp_test", "- raw+comp, seed 0, compsynth_test",
+                 "- raw+comp, seed 1, compsynth_test", "- raw+comp, seed 2, compsynth_test"):
+        assert line in head
+    assert "- raw," not in head and sum(ln.startswith("- ") for ln in head.splitlines()) == 4
+    assert "⚠ thiếu seed [2]" in main and "– ⚠ thiếu" in main
+
+
+def test_ci_from_seed0_or_flagged_missing(tmp_path):
+    for s in (1, 2):  # thiếu seed 0
+        put(tmp_path, fake_scores("raw", s), "raw", s)
+    main = (build_report(tmp_path) / "main.md").read_text(encoding="utf-8")
+    assert "CI: thiếu seed 0" in main
+    for s in range(3):
+        put(tmp_path, fake_scores("raw", s), "raw", s)
+    out = build_report(tmp_path)
+    sm = pd.read_parquet(out / "summary.parquet")
+    r0 = sm[sm.seed == 0].iloc[0]
+    assert f"[{r0.ci_lo:.4f}, {r0.ci_hi:.4f}]" in (out / "main.md").read_text(encoding="utf-8")
+
+
+def test_two_runs_same_arm_seed_rejected(tree):
+    d = tree / "aug" / "raw_other" / "seed0"  # arm run thứ hai cùng (dataset, seed, mode), split khác
+    d.mkdir(parents=True)
+    fake_scores("raw", 0, split="X").to_parquet(d / "scores_ffpp_test.parquet", index=False)
+    with pytest.raises(ValueError, match="cần đúng một"):
+        build_report(tree)

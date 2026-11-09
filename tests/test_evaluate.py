@@ -47,7 +47,9 @@ def synth_cross(tmp_path_factory):
 
 
 def ev(run, ds, vc, ffpp, cross=None):
-    return pd.read_parquet(evaluate_run(run, ds, cross or {}, ff_cfg=ffpp, vision_config=vc, device="cpu"))
+    out = evaluate_run(run, ds, cross or {}, ff_cfg=ffpp, vision_config=vc, device="cpu")
+    assert out == run
+    return pd.concat([pd.read_parquet(run / f"scores_{d}.parquet") for d in ds], ignore_index=True)
 
 
 def test_eval_refuses_unfinished_run(tmp_path):
@@ -98,7 +100,7 @@ def test_eval_ffpp_test_all_frames(trained_tiny_run, ffpp_synth, vc):
     assert set(df.dataset) == {"ffpp_test"} and (df.flag == "").all() and set(df.label) == {0, 1}
     assert df.logit.notna().all() and set(df["mode"]) == {"raw"} and set(df.seed) == {0}
     assert set(df.video_id) == {core[i]["targets"]["video_id"] for i in range(len(core))}
-    assert (trained_tiny_run / "scores.parquet").exists() and not list(trained_tiny_run.glob("*.tmp*"))
+    assert (trained_tiny_run / "scores_ffpp_test.parquet").exists() and not list(trained_tiny_run.glob("*.tmp*"))
 
 
 def test_eval_compsynth_test_cells(trained_tiny_run, ffpp_synth, vc):
@@ -131,3 +133,61 @@ def test_no_face_video_kept(trained_tiny_run, synth_cross, ffpp_synth, vc):
     assert len(ok) == int(man.keep.sum()) and (ok.frame_idx >= 0).all()
     assert set(df.video_id) == set(man.video_id)  # không video nào bị bỏ im lặng
     assert set(df.dataset) == {"cdf2"} and set(df.label) == {0, 1}
+
+
+def test_ffpp_test_video_without_kept_frames_flagged(trained_tiny_run, ffpp_synth, vc, monkeypatch):
+    import compsynth_ff.dataset as D
+
+    full = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+    victim = sorted(full.video_id.unique())[0]
+    Orig = D.FFppRawCore
+
+    class Dropping(Orig):  # mô phỏng video không còn frame keep
+        def __init__(self, cfg, subset):
+            super().__init__(cfg, subset)
+            self.items = [it for it in self.items if f"{it[0]}_{it[2]}" != victim]
+
+    monkeypatch.setattr(D, "FFppRawCore", Dropping)
+    df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+    row = df[df.flag == "no_usable_frame"]
+    assert len(row) == 1 and row.video_id.iloc[0] == victim and row.frame_idx.iloc[0] == -1
+    assert row.logit.iloc[0] == 0.0 and row.label.iloc[0] == int(not victim.endswith("_real"))
+    assert set(df.video_id) == set(full.video_id) and len(df) == len(full) - (full.video_id == victim).sum() + 1
+
+
+def test_ffpp_test_unexpected_video_rejected(trained_tiny_run, ffpp_synth, vc, monkeypatch):
+    import compsynth_ff.pairs as P
+
+    real = P.discover_targets
+    monkeypatch.setattr(P, "discover_targets", lambda cfg: [t for t in real(cfg) if t.subset != "test"])
+    with pytest.raises(ValueError, match="không thuộc tập test"):
+        ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+
+
+def test_reevaluating_one_dataset_keeps_other_files(trained_tiny_run, ffpp_synth, vc):
+    ev(trained_tiny_run, ["ffpp_test", "compsynth_test"], vc, ffpp_synth)
+    a = trained_tiny_run / "scores_ffpp_test.parquet"
+    b = trained_tiny_run / "scores_compsynth_test.parquet"
+    assert a.exists() and b.exists()
+    before = b.stat().st_mtime_ns, pd.read_parquet(b).logit.sum()
+    ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+    assert (b.stat().st_mtime_ns, pd.read_parquet(b).logit.sum()) == before  # file dataset khác không bị đụng
+    assert not (trained_tiny_run / "scores.parquet").exists()
+
+
+def test_eval_refuses_rebuilt_config_hash_mismatch(trained_tiny_run, tmp_path):
+    run = tmp_path / "r"
+    shutil.copytree(trained_tiny_run, run)
+    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
+    info["config"]["lora_r"] = 8
+    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="config_hash"):
+        evaluate_run(run, ["ffpp_test"], {})
+
+
+def test_compsynth_unknown_kind_keyerror(trained_tiny_run, ffpp_synth, vc, monkeypatch):
+    from compsynth_ff.dataset import L0_CODE
+
+    monkeypatch.delitem(L0_CODE, "a0ff")
+    with pytest.raises(KeyError):
+        ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)

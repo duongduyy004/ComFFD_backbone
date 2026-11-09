@@ -1,4 +1,4 @@
-"""Tổng hợp mọi `scores.parquet` dưới runs_root thành bảng báo cáo.
+"""Tổng hợp mọi `scores_{dataset}.parquet` dưới runs_root thành bảng báo cáo.
 
 Đầu ra: runs_root/report/{main.md, per_cell.md, delong.csv, summary.parquet}.
 Quy tắc trung thực:
@@ -8,9 +8,11 @@ Quy tắc trung thực:
 - DeLong ghép cặp: các arm (mode != compffd) so từng cặp trong CÙNG dataset và CÙNG seed, qua
   `stats.paired_frames` trên video_id (chỉ giao các video chung; `n_dropped` = số video chỉ có ở một bên, ghi vào
   delong.csv và main.md). compffd báo riêng, không ghép với arm.
+- Đủ kết quả: mỗi arm hiện có phải có đủ seed {0,1,2} x mọi dataset đã gặp ở đâu đó; thiếu thì KHÔNG raise mà liệt kê
+  đầu main.md (mục CẢNH BÁO) và đánh dấu ô bị ảnh hưởng. CI trong main.md luôn lấy từ seed 0 (thiếu -> "CI: thiếu seed 0").
 - Cùng (dataset, mode, split, seed) xuất hiện ở hai file scores -> ValueError; video có nhãn không nhất quán -> ValueError.
 - per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), a0ff/real báo tỉ lệ chấm "fake" (score > 0).
-- Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed nhỏ nhất]"; một seed -> sd "n/a".
+- Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed 0]"; một seed -> sd "n/a".
 Mô-đun không import torch. Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
@@ -26,6 +28,7 @@ from .stats import auc, bootstrap_ci, delong_paired, paired_frames, video_scores
 
 REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
 N_BOOT, ALPHA = 1000, 0.05
+REQUIRED_SEEDS = (0, 1, 2)
 
 
 def _arm_label(mode: str, split: str) -> str:
@@ -48,9 +51,9 @@ def _fmt(x, p=4) -> str:
 
 
 def _load(runs_root: Path):
-    files = sorted(p for p in runs_root.rglob("scores.parquet") if "report" not in p.relative_to(runs_root).parts)
+    files = sorted(p for p in runs_root.rglob("scores_*.parquet") if "report" not in p.relative_to(runs_root).parts)
     if not files:
-        raise FileNotFoundError(f"Không có scores.parquet dưới {runs_root}")
+        raise FileNotFoundError(f"Không có scores_*.parquet dưới {runs_root}")
     seen, tables = {}, {}
     for p in files:
         df = pd.read_parquet(p)
@@ -85,6 +88,12 @@ def build_report(runs_root) -> Path:
     # ---- delong (chỉ arm, cùng dataset + cùng seed)
     dl = []
     arms = {k: v for k, v in tables.items() if k[1] != "compffd"}
+    cnt = {}
+    for k in arms:
+        cnt.setdefault((k[0], k[3], k[1]), []).append(k)
+    for k3, ks in cnt.items():
+        if len(ks) != 1:
+            raise ValueError(f"(dataset, seed, mode) = {k3} có {len(ks)} run (split khác nhau): {ks}; cần đúng một")
     for ds, seed in sorted({(k[0], k[3]) for k in arms}):
         modes = sorted(k[1] for k in arms if k[0] == ds and k[3] == seed)
         for ma, mb in combinations(modes, 2):
@@ -105,24 +114,37 @@ def build_report(runs_root) -> Path:
     summ["arm"] = [_arm_label(m, s) for m, s in zip(summ["mode"], summ.split)]
     dss = sorted(summ.dataset.unique())
 
-    def cell(g):
+    arm_of = {(m, sp): _arm_label(m, sp) for m, sp in zip(summ["mode"], summ.split)}
+    present = {(arm_of[(k[1], k[2])], k[0], int(k[3])) for k in tables}
+    all_ds = sorted({k[0] for k in tables})
+    missing = [(a, s_, d) for a in sorted({x[0] for x in present}) for d in all_ds for s_ in REQUIRED_SEEDS
+               if (a, d, s_) not in present]
+
+    def cell(g, arm=None, d=None):
+        miss = sorted(s_ for a, s_, dd in missing if a == arm and dd == d)
+        warn = f" ⚠ thiếu seed {miss}" if miss else ""
         if g is None or g.empty:
-            return "–"
+            return "– ⚠ thiếu" if arm else "–"
         g = g.sort_values("seed")
         sd = g.auc.std(ddof=1) if len(g) > 1 else float("nan")
-        f = g.iloc[0]
-        return f"{_fmt(g.auc.mean())} ± {_fmt(sd)} [{_fmt(f.ci_lo)}, {_fmt(f.ci_hi)}] (n_seed={len(g)})"
+        f0 = g[g.seed == 0]
+        ci = f"[{_fmt(f0.iloc[0].ci_lo)}, {_fmt(f0.iloc[0].ci_hi)}]" if len(f0) else "CI: thiếu seed 0"
+        return f"{_fmt(g.auc.mean())} ± {_fmt(sd)} {ci} (n_seed={len(g)}){warn}"
 
     def table(arm_names):
         lines = ["| arm | " + " | ".join(dss) + " |", "|---|" + "---|" * len(dss)]
         for a in arm_names:
-            lines.append(f"| {a} | " + " | ".join(cell(summ[(summ.arm == a) & (summ.dataset == d)]) for d in dss) + " |")
+            lines.append(f"| {a} | " + " | ".join(cell(summ[(summ.arm == a) & (summ.dataset == d)], a, d) for d in dss) + " |")
         return lines
 
     arm_names = sorted(summ[summ["mode"] != "compffd"].arm.unique())
     cf_names = sorted(summ[summ["mode"] == "compffd"].arm.unique())
     md = ["# AUC video theo arm x dataset", "",
-          f"Ô = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}% theo video, seed nhỏ nhất, n={N_BOOT}].", ""]
+          f"Ô = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}% theo video, seed 0, n={N_BOOT}].", ""]
+    if missing:
+        md += ["## CẢNH BÁO: thiếu kết quả (báo cáo chưa đầy đủ)", "",
+               f"Cần seed {list(REQUIRED_SEEDS)} x mọi dataset cho mỗi arm. Thiếu {len(missing)} tổ hợp (arm, seed, dataset):", ""]
+        md += [f"- {a}, seed {s_}, {d}" for a, s_, d in missing] + [""]
     md += table(arm_names)
     if cf_names:
         md += ["", "## compffd (báo riêng, không ghép cặp với arm)", ""] + table(cf_names)
