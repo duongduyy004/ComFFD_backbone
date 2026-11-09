@@ -296,3 +296,31 @@ def test_train_with_worker_cpu(ffpp_synth, tiny, tmp_path):
     """C1: train() với num_workers=1 chạy được 2 step trên CPU (spawn trên Windows)."""
     d = run(mkcfg(runs_root=tmp_path, total_steps=2, eval_every=2, ckpt_every=2, num_workers=1), ffpp_synth, tiny)
     assert (d / "done.flag").exists() and len(losses(d)) == 2
+
+
+def test_epoch_batches_balanced(ffpp_synth):
+    """I5: mỗi batch đúng một nửa L0==0 (real, chỉ số chẵn) và một nửa fake; batch_size lẻ -> ValueError."""
+    from ffd.data.arms import ArmTrainDataset
+
+    for n, bs in ((126, 6), (40, 4), (41, 8), (2, 2)):
+        bb = T._epoch_batches(n, bs, 3, 1)
+        assert bb == T._epoch_batches(n, bs, 3, 1) and bb != T._epoch_batches(n, bs, 3, 2) or n == 2
+        assert len(bb) == min((n + 1) // 2, n // 2) // (bs // 2)
+        for b in bb:
+            assert len(b) == bs and sum(i % 2 == 0 for i in b) == bs // 2 and len(set(b)) == bs
+        assert len({i for b in bb for i in b}) == len(bb) * bs  # không lặp trong epoch
+    with pytest.raises(ValueError, match="chẵn"):
+        T._epoch_batches(40, 5, 0, 0)
+    ds = ArmTrainDataset(ffpp_synth, "raw+sb", 0.5, 0)
+    for b in T._epoch_batches(len(ds), 4, 0, 0)[:3]:
+        assert sum(ds[i]["targets"]["L0"] == 0 for i in b) == 2
+
+
+def test_odd_batch_size_rejected_by_config(tmp_path):
+    from ffd.config import load_train_config
+
+    y = tmp_path / "c.yaml"
+    y.write_text("ffpp_config: x.yaml\nruns_root: r\nmode: raw\nseed: 0\ntotal_steps: 1\neval_every: 1\n"
+                 "ckpt_every: 1\nbatch_size: 7\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="chẵn"):
+        load_train_config(y)

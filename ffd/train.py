@@ -1,9 +1,9 @@
 """Vòng train: val định kỳ, chọn best.pt theo (AUC video, BCE), last.pt + resume, chặn NaN.
 
 Quy ước:
-- 1 "step" = 1 lần cập nhật optimizer (gồm `grad_accum` micro-batch). Mỗi epoch xáo thứ tự bằng
-  Generator(seed, epoch), drop_last; vị trí trong epoch suy ra từ step nên resume không cần
-  đọc lại dữ liệu đã qua. `dataset.set_epoch(e)` gọi ở tiến trình chính mỗi đầu epoch, DataLoader
+- 1 "step" = 1 lần cập nhật optimizer (gồm `grad_accum` micro-batch). Mỗi micro-batch đúng batch_size/2 real
+  + batch_size/2 fake (`_epoch_batches`, batch_size phải chẵn); thứ tự xáo bằng Generator(seed, epoch),
+  drop_last; vị trí trong epoch suy ra từ step nên resume không cần đọc lại dữ liệu đã qua. `dataset.set_epoch(e)` gọi ở tiến trình chính mỗi đầu epoch, DataLoader
   `persistent_workers=False` nên worker tạo lại mỗi epoch và thấy epoch mới.
 - Thứ tự trong một step: cập nhật -> train_log -> val (nếu eval_every) -> last.pt (nếu ckpt_every).
   Step cuối luôn val và lưu last.pt.
@@ -167,9 +167,22 @@ def _seed_worker(worker_id: int, seed: int) -> None:
 
 
 def _epoch_batches(n: int, bs: int, seed: int, epoch: int) -> list[list[int]]:
+    """Batch cân bằng: mỗi batch đúng bs/2 mục real (chỉ số chẵn) + bs/2 mục fake (chỉ số lẻ).
+
+    Xáo riêng danh sách chẵn và lẻ bằng cùng Generator(seed, epoch), ghép từng nửa, drop_last theo danh sách
+    ngắn hơn, rồi xáo thứ tự trong batch. Tất định theo (seed, epoch) nên resume suy ra vị trí từ step.
+    """
+    if bs < 2 or bs % 2:
+        raise ValueError(f"batch_size phải chẵn và >= 2 (nửa real, nửa fake), nhận {bs}")
     g = torch.Generator().manual_seed(seed * 100_003 + epoch)
-    perm = torch.randperm(n, generator=g).tolist()
-    return [perm[i:i + bs] for i in range(0, n - bs + 1, bs)]  # drop_last
+    real = torch.arange(0, n, 2)[torch.randperm((n + 1) // 2, generator=g)]
+    fake = torch.arange(1, n, 2)[torch.randperm(n // 2, generator=g)]
+    h = bs // 2
+    out = []
+    for b in range(min(len(real), len(fake)) // h):  # drop_last
+        idx = torch.cat([real[b * h:(b + 1) * h], fake[b * h:(b + 1) * h]])
+        out.append(idx[torch.randperm(bs, generator=g)].tolist())
+    return out
 
 
 def _video_of(ds, idx: int) -> str:

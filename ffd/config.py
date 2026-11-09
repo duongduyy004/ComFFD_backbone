@@ -92,6 +92,8 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
         cfg = TrainConfig(**d)
     except TypeError as e:
         raise ValueError(f"Thiếu khóa bắt buộc: {e}") from e
+    if cfg.batch_size < 2 or cfg.batch_size % 2:
+        raise ValueError(f"batch_size phải chẵn (nửa real, nửa fake mỗi batch), nhận {cfg.batch_size}")
     if cfg.mode not in MODES:
         raise ValueError(f"mode phải thuộc {MODES}, nhận {cfg.mode!r}")
     if cfg.mode == "compffd" and not cfg.split:
