@@ -22,6 +22,7 @@ Trạng thái: chưa chạy thử (chỉ test CPU với CLIP tí hon ngẫu nhi�
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import random
@@ -157,13 +158,12 @@ def _set_rng_state(s: dict) -> None:
     random.setstate(s["python"])
 
 
-def _worker_init(seed: int):
-    def fn(worker_id: int):
-        s = (seed * 1_000_003 + worker_id) % (2**32)
-        np.random.seed(s)
-        random.seed(s)
-        torch.manual_seed(s)
-    return fn
+def _seed_worker(worker_id: int, seed: int) -> None:
+    """worker_init_fn cấp module (pickle được khi Windows dùng spawn); bọc bằng functools.partial(seed=...)."""
+    s = (seed * 1_000_003 + worker_id) % (2**32)
+    np.random.seed(s)
+    random.seed(s)
+    torch.manual_seed(s)
 
 
 def _epoch_batches(n: int, bs: int, seed: int, epoch: int) -> list[list[int]]:
@@ -262,7 +262,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         batches = _epoch_batches(len(ds), cfg.batch_size, cfg.seed, epoch)[off:]
         loader = torch.utils.data.DataLoader(
             ds, batch_sampler=batches, num_workers=cfg.num_workers, persistent_workers=False,
-            worker_init_fn=_worker_init(cfg.seed) if cfg.num_workers else None)
+            worker_init_fn=functools.partial(_seed_worker, seed=cfg.seed) if cfg.num_workers else None)
         for bi, batch in enumerate(loader):
             x = batch["image"].to(device)
             tg = {k: v.to(device) for k, v in batch["targets"].items() if torch.is_tensor(v)}

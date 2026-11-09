@@ -275,3 +275,24 @@ def test_grad_accum_across_epoch_resume(ffpp_synth, tiny, tmp_path, monkeypatch)
     run(cb, ffpp_synth, tiny, resume=True)
     res = losses(T.run_dir(cb))
     assert len(res) == 14 and res == pytest.approx(full, rel=1e-5)
+
+
+def test_dataloader_spawn_worker_iterates(ffpp_synth):
+    """C1: worker_init_fn pickle được với spawn (mặc định Windows); DataLoader num_workers=1 lấy được một batch."""
+    import functools
+    import multiprocessing as mp
+
+    from ffd.data.arms import ArmTrainDataset
+
+    ds = ArmTrainDataset(ffpp_synth, "raw+comp", 0.5, 0)
+    loader = torch.utils.data.DataLoader(
+        ds, batch_sampler=T._epoch_batches(len(ds), 4, 0, 0)[:1], num_workers=1, persistent_workers=False,
+        worker_init_fn=functools.partial(T._seed_worker, seed=0), multiprocessing_context=mp.get_context("spawn"))
+    batch = next(iter(loader))
+    assert batch["image"].shape[0] == 4
+
+
+def test_train_with_worker_cpu(ffpp_synth, tiny, tmp_path):
+    """C1: train() với num_workers=1 chạy được 2 step trên CPU (spawn trên Windows)."""
+    d = run(mkcfg(runs_root=tmp_path, total_steps=2, eval_every=2, ckpt_every=2, num_workers=1), ffpp_synth, tiny)
+    assert (d / "done.flag").exists() and len(losses(d)) == 2
