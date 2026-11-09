@@ -1,0 +1,188 @@
+"""Tổng hợp mọi `scores.parquet` dưới runs_root thành bảng báo cáo.
+
+Đầu ra: runs_root/report/{main.md, per_cell.md, delong.csv, summary.parquet}.
+Quy tắc trung thực:
+- Điểm mức video tính TRƯỚC (`stats.video_scores`: trung bình logit theo video_id), mọi AUC/CI/DeLong dùng bảng video.
+  Video có cờ no_usable_frame/decode_error (logit 0.0) vẫn nằm trong AUC và được đếm riêng trong chú thích.
+- CI: `bootstrap_ci` gom theo video, n=1000, alpha=0.05, seed 0 (trên bảng video).
+- DeLong ghép cặp: các arm (mode != compffd) so từng cặp trong CÙNG dataset và CÙNG seed, qua
+  `stats.paired_frames` trên video_id (chỉ giao các video chung; `n_dropped` = số video chỉ có ở một bên, ghi vào
+  delong.csv và main.md). compffd báo riêng, không ghép với arm.
+- Cùng (dataset, mode, split, seed) xuất hiện ở hai file scores -> ValueError; video có nhãn không nhất quán -> ValueError.
+- per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), a0ff/real báo tỉ lệ chấm "fake" (score > 0).
+- Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed nhỏ nhất]"; một seed -> sd "n/a".
+Mô-đun không import torch. Trạng thái: chưa chạy thử.
+"""
+from __future__ import annotations
+
+from itertools import combinations
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from compsynth_ff.io_utils import atomic_write_bytes, write_parquet_atomic
+
+from .stats import auc, bootstrap_ci, delong_paired, paired_frames, video_scores
+
+REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
+N_BOOT, ALPHA = 1000, 0.05
+
+
+def _arm_label(mode: str, split: str) -> str:
+    return f"compffd/{split}" if mode == "compffd" else mode
+
+
+def _video_table(g: pd.DataFrame, key) -> pd.DataFrame:
+    nl = g.groupby("video_id").label.nunique()
+    if (nl > 1).any():
+        raise ValueError(f"{key}: video {nl[nl > 1].index[0]!r} có nhãn không nhất quán")
+    v = video_scores(g)
+    meta = g.groupby("video_id").agg(cell=("cell", "first"),
+                                     nuf=("flag", lambda s: (s == "no_usable_frame").any()),
+                                     dec=("flag", lambda s: (s == "decode_error").any())).reset_index()
+    return v.merge(meta, on="video_id")
+
+
+def _fmt(x, p=4) -> str:
+    return "n/a" if x is None or not np.isfinite(x) else f"{x:.{p}f}"
+
+
+def _load(runs_root: Path):
+    files = sorted(p for p in runs_root.rglob("scores.parquet") if "report" not in p.relative_to(runs_root).parts)
+    if not files:
+        raise FileNotFoundError(f"Không có scores.parquet dưới {runs_root}")
+    seen, tables = {}, {}
+    for p in files:
+        df = pd.read_parquet(p)
+        miss = set(REQUIRED) - set(df.columns)
+        if miss:
+            raise ValueError(f"{p} thiếu cột {sorted(miss)}")
+        df["split"] = df["split"].fillna("").astype(str)
+        for key, g in df.groupby(["dataset", "mode", "split", "seed"], sort=True):
+            if key in seen:
+                raise ValueError(f"Chạy trùng {key}: có ở {seen[key]} và {p}")
+            seen[key] = p
+            tables[key] = _video_table(g, key)
+    return tables
+
+
+def build_report(runs_root) -> Path:
+    runs_root = Path(runs_root)
+    tables = _load(runs_root)
+    out = runs_root / "report"
+
+    # ---- summary
+    rows = []
+    for (ds, mode, split, seed), v in sorted(tables.items()):
+        try:
+            a, lo, hi = bootstrap_ci(v.label, v.score, v.video_id, n=N_BOOT, seed=0, alpha=ALPHA)
+        except ValueError as e:
+            raise ValueError(f"{(ds, mode, split, seed)}: không tính được AUC/CI ({e})") from e
+        rows.append(dict(dataset=ds, mode=mode, split=split, seed=int(seed), auc=a, ci_lo=lo, ci_hi=hi,
+                         n_videos=len(v), n_no_usable_frame=int(v.nuf.sum()), n_decode_error=int(v.dec.sum())))
+    summ = pd.DataFrame(rows)
+
+    # ---- delong (chỉ arm, cùng dataset + cùng seed)
+    dl = []
+    arms = {k: v for k, v in tables.items() if k[1] != "compffd"}
+    for ds, seed in sorted({(k[0], k[3]) for k in arms}):
+        modes = sorted(k[1] for k in arms if k[0] == ds and k[3] == seed)
+        for ma, mb in combinations(modes, 2):
+            ka = next(k for k in arms if k[0] == ds and k[3] == seed and k[1] == ma)
+            kb = next(k for k in arms if k[0] == ds and k[3] == seed and k[1] == mb)
+            sa, sb, nd = paired_frames(tables[ka][["video_id", "label", "score"]],
+                                       tables[kb][["video_id", "label", "score"]])
+            if not (sa.label.to_numpy() == sb.label.to_numpy()).all():
+                raise ValueError(f"{ds} seed {seed}: {ma} và {mb} gán nhãn khác nhau cho cùng video")
+            d, z, p = delong_paired(sa.label, sa.score, sb.score)
+            dl.append(dict(dataset=ds, seed=int(seed), arm_a=ma, arm_b=mb,
+                           auc_a=auc(sa.label, sa.score), auc_b=auc(sb.label, sb.score),
+                           diff=d, z=z, p=p, n_videos=len(sa), n_dropped=int(nd)))
+    delong = pd.DataFrame(dl, columns=["dataset", "seed", "arm_a", "arm_b", "auc_a", "auc_b", "diff", "z", "p",
+                                       "n_videos", "n_dropped"])
+
+    # ---- main.md
+    summ["arm"] = [_arm_label(m, s) for m, s in zip(summ["mode"], summ.split)]
+    dss = sorted(summ.dataset.unique())
+
+    def cell(g):
+        if g is None or g.empty:
+            return "–"
+        g = g.sort_values("seed")
+        sd = g.auc.std(ddof=1) if len(g) > 1 else float("nan")
+        f = g.iloc[0]
+        return f"{_fmt(g.auc.mean())} ± {_fmt(sd)} [{_fmt(f.ci_lo)}, {_fmt(f.ci_hi)}] (n_seed={len(g)})"
+
+    def table(arm_names):
+        lines = ["| arm | " + " | ".join(dss) + " |", "|---|" + "---|" * len(dss)]
+        for a in arm_names:
+            lines.append(f"| {a} | " + " | ".join(cell(summ[(summ.arm == a) & (summ.dataset == d)]) for d in dss) + " |")
+        return lines
+
+    arm_names = sorted(summ[summ["mode"] != "compffd"].arm.unique())
+    cf_names = sorted(summ[summ["mode"] == "compffd"].arm.unique())
+    md = ["# AUC video theo arm x dataset", "",
+          f"Ô = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}% theo video, seed nhỏ nhất, n={N_BOOT}].", ""]
+    md += table(arm_names)
+    if cf_names:
+        md += ["", "## compffd (báo riêng, không ghép cặp với arm)", ""] + table(cf_names)
+    md += ["", "## Chú thích", ""]
+    for d in dss:
+        sd_ = summ[summ.dataset == d]
+        nv = sd_.groupby("arm").n_videos.agg(["min", "max"])
+        nuf = int(sd_.groupby("arm").n_no_usable_frame.max().max())
+        dec = int(sd_.groupby("arm").n_decode_error.max().max())
+        nd = int(delong[delong.dataset == d].n_dropped.sum()) if len(delong) else 0
+        md.append(f"- {d}: n_videos {int(nv['min'].min())}-{int(nv['max'].max())}; "
+                  f"video no_usable_frame = {nuf}, decode_error = {dec} (tính trong AUC với score 0.0); "
+                  f"video bị loại khi ghép cặp (n_dropped, cộng mọi cặp) = {nd}")
+    md += ["", f"Tổng n_dropped khi ghép cặp: {int(delong.n_dropped.sum()) if len(delong) else 0} (chi tiết: delong.csv)."]
+    main_md = "\n".join(md) + "\n"
+
+    # ---- per_cell.md (compsynth_test)
+    pc = []
+    for (ds, mode, split, seed), v in sorted(tables.items()):
+        if ds != "compsynth_test":
+            continue
+        real = v[v.cell == "real"]
+        for c, g in v.groupby("cell"):
+            if c == "real":
+                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g), auc=np.nan,
+                               frac_pos=float((g.score > 0).mean())))
+            elif (g.label == 1).all():
+                both = pd.concat([g, real])
+                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g),
+                               auc=auc(both.label, both.score) if both.label.nunique() == 2 else np.nan,
+                               frac_pos=float((g.score > 0).mean())))
+            else:  # a0ff
+                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g), auc=np.nan,
+                               frac_pos=float((g.score > 0).mean())))
+    pcd = pd.DataFrame(pc, columns=["arm", "seed", "cell", "n", "auc", "frac_pos"])
+    pm = ["# AUC theo ô CompSynth-FF test", ""]
+    if pcd.empty:
+        pm.append("Không có run nào được chấm trên compsynth_test.")
+    else:
+        names = sorted(pcd.arm.unique())
+
+        def pivot(cells, col, title):
+            out_ = [title, "", "| cell | n_video | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
+            for c in cells:
+                parts, nvid = [], int(pcd[pcd.cell == c].groupby("arm").n.max().max())
+                for a in names:
+                    x = pcd[(pcd.cell == c) & (pcd.arm == a)][col]
+                    parts.append("–" if x.empty else f"{_fmt(x.mean())} ± {_fmt(x.std(ddof=1) if len(x) > 1 else float('nan'))}")
+                out_.append(f"| {c} | {nvid} | " + " | ".join(parts) + " |")
+            return out_
+
+        fake_cells = sorted(c for c in pcd.cell.unique() if c not in ("real", "a0ff"))
+        pm += pivot(fake_cells, "auc", "Ô fake: AUC (video của ô vs mọi video real), trung bình seed ± sd") + [""]
+        neg = [c for c in ("a0ff", "real") if c in set(pcd.cell)]
+        pm += pivot(neg, "frac_pos", "Ô nhãn 0: tỉ lệ video bị chấm fake (score > 0), trung bình seed ± sd")
+    per_cell_md = "\n".join(pm) + "\n"
+
+    # ---- ghi
+    atomic_write_bytes(out / "main.md", main_md.encode("utf-8"))
+    atomic_write_bytes(out / "per_cell.md", per_cell_md.encode("utf-8"))
+    atomic_write_bytes(out / "delong.csv", delong.to_csv(index=False).encode("utf-8"))
+    write_parquet_atomic(summ.drop(columns="arm"), out / "summary.parquet")
+    return out

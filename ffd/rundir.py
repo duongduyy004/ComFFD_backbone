@@ -4,6 +4,7 @@ Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -73,6 +74,7 @@ def write_run_info(dir, cfg: TrainConfig, extra: dict) -> None:
         "gpu": _gpu(),
         "seed": cfg.seed,
         "mode": cfg.mode,
+        "config": json.loads(json.dumps(dataclasses.asdict(cfg), default=str)),  # evaluate dựng lại Detector từ đây
         **extra,
     }
     write_json_atomic(info, Path(dir) / "run_info.json")
