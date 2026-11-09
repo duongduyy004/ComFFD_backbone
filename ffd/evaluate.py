@@ -1,6 +1,6 @@
 """Chấm điểm best.pt của một run trên tập test, ghi `scores_{dataset}.parquet` mỗi dataset (mức frame, kèm cờ).
 
-Cột: run, mode, seed, split, dataset, video_id, frame_idx, label, logit, cell, flag.
+Cột: run, mode, seed, split, dataset, video_id, frame_idx, label, logit, cell, flag, best_step (step của best.pt đã chấm).
 Quy ước:
 - `datasets` ⊆ {ffpp_test, compsynth_test, cdf2}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
 - Chỉ nạp `best.pt` (qua `Detector.load_trainable`); cần `done.flag`; nếu run có prereg thì hash trong
@@ -41,7 +41,8 @@ from .rundir import ffpp_hashes
 from .train import _autocast
 
 DATASETS = ("ffpp_test", "compsynth_test", "cdf2")
-COLUMNS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
+COLUMNS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
+           "best_step"]
 
 
 def _cfg_from_info(info: dict) -> TrainConfig:
@@ -228,8 +229,8 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vi
         frames.append(_frame(df, dataset=ds))
     df = pd.concat(frames, ignore_index=True)
     rid = f"compffd/{cfg.split}/seed{cfg.seed}" if cfg.mode == "compffd" else f"{cfg.mode}/seed{cfg.seed}"
-    df = _frame(df, run=rid, mode=cfg.mode, seed=int(cfg.seed), split=cfg.split or "")
-    df = df[COLUMNS].astype({"frame_idx": "int64", "label": "int64", "logit": "float64"})
+    df = _frame(df, run=rid, mode=cfg.mode, seed=int(cfg.seed), split=cfg.split or "", best_step=int(ck["step"]))
+    df = df[COLUMNS].astype({"frame_idx": "int64", "label": "int64", "logit": "float64", "best_step": "int64"})
     for ds, g in df.groupby("dataset", sort=False):  # một file mỗi dataset: chấm lại dataset nào chỉ thay file đó
         write_parquet_atomic(g.reset_index(drop=True), run / f"scores_{ds}.parquet")
     if eval_info:  # nguồn tập video kỳ vọng (artifacts_only = máy không có data_root FF++)

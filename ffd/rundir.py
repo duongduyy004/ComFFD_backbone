@@ -21,7 +21,9 @@ def run_dir(cfg: TrainConfig) -> Path:
     return Path(cfg.runs_root) / "aug" / cfg.mode / f"seed{cfg.seed}"
 
 
-STALE = ("done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json")
+# Kết quả của một lần chạy (cả điểm eval: scores_*.parquet, eval_info.json): --force xóa hết, không resume/force thì từ chối.
+STALE = ("done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json",
+         "scores_ffpp_test.parquet", "scores_compsynth_test.parquet", "scores_cdf2.parquet", "eval_info.json")
 
 
 def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:

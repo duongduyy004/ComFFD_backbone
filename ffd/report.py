@@ -18,7 +18,9 @@ Quy tắc trung thực:
 - run_info["config"] của các run arm (aug/) chỉ được khác nhau ở ARM_FREE_KEYS; khóa khác lệch -> liệt kê dưới CẢNH BÁO.
 - per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), a0ff/real báo tỉ lệ chấm "fake" (score > 0).
 - Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed 0]"; một seed -> sd "n/a".
-Mô-đun không import torch. Trạng thái: chưa chạy thử.
+- Mỗi scores_*.parquet phải có best_step bằng step của best.pt HIỆN TẠI trong cùng thư mục run; lệch, thiếu best.pt
+  hoặc nhiều giá trị -> liệt kê dưới CẢNH BÁO (điểm cũ không còn khớp checkpoint).
+Mô-đun không import torch ở cấp module (chỉ import trễ để đọc step trong best.pt). Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
@@ -32,7 +34,8 @@ from compsynth_ff.io_utils import atomic_write_bytes, write_parquet_atomic
 
 from .stats import auc, bootstrap_ci, delong_paired, paired_frames, video_scores
 
-REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
+REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
+            "best_step"]
 N_BOOT, ALPHA = 1000, 0.05
 REQUIRED_SEEDS = (0, 1, 2)
 EXPECTED_ARMS = ("raw", "raw+comp", "raw+sb")
@@ -74,24 +77,40 @@ def _fmt(x, p=4) -> str:
     return "n/a" if x is None or not np.isfinite(x) else f"{x:.{p}f}"
 
 
+def _best_pt_step(run: Path):
+    """Step trong run/best.pt; None nếu không có file."""
+    p = run / "best.pt"
+    if not p.exists():
+        return None
+    import torch  # trễ: chỉ cần khi có best.pt
+
+    return int(torch.load(p, map_location="cpu", weights_only=False)["step"])
+
+
 def _load(runs_root: Path):
     files = sorted(p for p in runs_root.rglob("scores_*.parquet") if "report" not in p.relative_to(runs_root).parts)
     if not files:
         raise FileNotFoundError(f"Không có scores_*.parquet dưới {runs_root}")
-    seen, tables, fauc = {}, {}, {}
+    seen, tables, fauc, stale, best_cache = {}, {}, {}, [], {}
     for p in files:
         df = pd.read_parquet(p)
         miss = set(REQUIRED) - set(df.columns)
         if miss:
             raise ValueError(f"{p} thiếu cột {sorted(miss)}")
         df["split"] = df["split"].fillna("").astype(str)
+        run = p.parent
+        if run not in best_cache:
+            best_cache[run] = _best_pt_step(run)
+        steps, now = sorted({int(x) for x in df.best_step}), best_cache[run]
+        if now is None or steps != [now]:
+            stale.append((p.relative_to(runs_root).as_posix(), steps, now))
         for key, g in df.groupby(["dataset", "mode", "split", "seed"], sort=True):
             if key in seen:
                 raise ValueError(f"Chạy trùng {key}: có ở {seen[key]} và {p}")
             seen[key] = p
             tables[key] = _video_table(g, key)
             fauc[key] = _frame_auc(g)
-    return tables, fauc
+    return tables, fauc, stale
 
 
 def _runs_without_prereg(runs_root: Path) -> list:
@@ -126,7 +145,7 @@ def _arm_config_diffs(runs_root: Path) -> list:
 
 def build_report(runs_root) -> Path:
     runs_root = Path(runs_root)
-    tables, fauc = _load(runs_root)
+    tables, fauc, stale = _load(runs_root)
     out = runs_root / "report"
 
     # ---- summary
@@ -212,7 +231,7 @@ def build_report(runs_root) -> Path:
           "cột (frame) = AUC mức frame trung bình các seed ± sd.", ""]
     noprereg = _runs_without_prereg(runs_root)
     cfg_diffs = _arm_config_diffs(runs_root)
-    if missing or noprereg or cfg_diffs:
+    if missing or noprereg or cfg_diffs or stale:
         md += ["## CẢNH BÁO: thiếu kết quả (báo cáo chưa đầy đủ)", ""]
     if absent_arms:
         md += [f"Arm kỳ vọng VẮNG HOÀN TOÀN (không có file scores nào): {', '.join(absent_arms)}", ""]
@@ -222,6 +241,9 @@ def build_report(runs_root) -> Path:
     if noprereg:
         md += [f"Run KHÔNG có prereg_hash trong run_info.json ({len(noprereg)}; không thuộc thiết kế đã đăng ký trước):", ""]
         md += [f"- {r}" for r in noprereg] + [""]
+    if stale:
+        md += [f"File scores KHÔNG khớp best.pt hiện tại ({len(stale)}; cần eval lại):", ""]
+        md += [f"- {f}: best_step trong scores = {s}, best.pt = {'thiếu' if n is None else n}" for f, s, n in stale] + [""]
     if cfg_diffs:
         md += [f"Config các run arm khác nhau ngoài {list(ARM_FREE_KEYS)} ({len(cfg_diffs)} khóa; so sánh arm KHÔNG có kiểm soát):", ""]
         md += [f"- {k}: " + "; ".join(f"{r}={v}" for r, v in sorted(vals.items())) for k, vals in cfg_diffs] + [""]

@@ -1,4 +1,4 @@
-"""Test báo cáo (không cần torch). Trạng thái: chưa chạy thử.
+"""Test báo cáo (torch chỉ dùng để ghi best.pt giả). Trạng thái: chưa chạy thử.
 Toàn bộ scores.parquet ở đây là TỔNG HỢP (MINH HỌA), không phải kết quả thật."""
 from itertools import combinations
 
@@ -8,7 +8,11 @@ import pytest
 
 from ffd.report import build_report
 
-COLS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
+torch = pytest.importorskip("torch")  # chỉ để ghi best.pt giả (MINH HỌA) cho kiểm tra best_step
+
+COLS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
+        "best_step"]
+BEST_STEP = 10
 ARMS = ("raw", "raw+comp", "raw+sb")
 STRENGTH = {"raw": 0.8, "raw+comp": 1.6, "raw+sb": 1.2, "compffd": 2.0}
 
@@ -28,7 +32,7 @@ def fake_scores(mode, seed, dataset="ffpp_test", nvid=20, split="", drop=(), fla
             flag = ""
             if vid in flagged:
                 lg, f, flag = 0.0, -1, "no_usable_frame"
-            rows.append((f"{mode}/seed{seed}", mode, seed, split, dataset, vid, f, lab, lg, cell, flag))
+            rows.append((f"{mode}/seed{seed}", mode, seed, split, dataset, vid, f, lab, lg, cell, flag, BEST_STEP))
             if flag:
                 break
     return pd.DataFrame(rows, columns=COLS)
@@ -37,6 +41,8 @@ def fake_scores(mode, seed, dataset="ffpp_test", nvid=20, split="", drop=(), fla
 def put(root, df, mode, seed, split=""):
     d = root / ("compffd" if mode == "compffd" else "aug") / (split if mode == "compffd" else mode) / f"seed{seed}"
     d.mkdir(parents=True, exist_ok=True)
+    if not (d / "best.pt").exists():  # report đối chiếu best_step trong scores với best.pt (I6)
+        torch.save({"step": BEST_STEP, "trainable": {}}, d / "best.pt")
     for ds, g in df.groupby("dataset"):  # một file mỗi dataset, như evaluate_run
         g.to_parquet(d / f"scores_{ds}.parquet", index=False)
 
@@ -210,7 +216,7 @@ def tid_scores(mode, seed, dataset, ntid=12):
         for vid, lab, cell in vids:
             for f in range(2):
                 rows.append((f"{mode}/seed{seed}", mode, seed, "", dataset, vid, f, lab,
-                             rng.normal(lab * STRENGTH[mode], 1.0), cell, ""))
+                             rng.normal(lab * STRENGTH[mode], 1.0), cell, "", BEST_STEP))
     return pd.DataFrame(rows, columns=COLS)
 
 
@@ -263,3 +269,14 @@ def test_arm_config_diff_warned(tree):
     head = main.split("## CẢNH BÁO", 1)[1].split("| arm", 1)[0]
     line = [ln for ln in head.splitlines() if ln.startswith("- lr:")]
     assert line and "aug/raw+sb/seed1=0.001" in line[0] and "- rho:" not in head and "- seed:" not in head
+
+
+def test_scores_best_step_mismatch_warned(tree):
+    """I6: best.pt đổi (vd train lại) mà scores cũ còn -> CẢNH BÁO; thiếu best.pt cũng cảnh báo."""
+    torch.save({"step": 99, "trainable": {}}, tree / "aug" / "raw" / "seed1" / "best.pt")
+    (tree / "aug" / "raw+sb" / "seed2" / "best.pt").unlink()
+    main = (build_report(tree) / "main.md").read_text(encoding="utf-8")
+    head = main.split("## CẢNH BÁO", 1)[1].split("| arm", 1)[0]
+    assert "- aug/raw/seed1/scores_ffpp_test.parquet: best_step trong scores = [10], best.pt = 99" in head
+    assert "- aug/raw+sb/seed2/scores_ffpp_test.parquet: best_step trong scores = [10], best.pt = thiếu" in head
+    assert "aug/raw/seed0" not in head

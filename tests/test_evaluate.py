@@ -19,7 +19,8 @@ from ffd.evaluate import evaluate_run  # noqa: E402
 from ffd.guards import LeakageError, allow_read  # noqa: E402
 from ffd.train import train  # noqa: E402
 
-COLS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
+COLS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
+        "best_step"]
 
 
 @pytest.fixture(scope="module")
@@ -270,3 +271,10 @@ def test_eval_refuses_model_commit_mismatch(trained_tiny_run, ffpp_synth, vc, tm
     (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
     with pytest.raises(ValueError, match="commit"):
         evaluate_run(run, ["ffpp_test"], {}, ff_cfg=ffpp_synth, vision_config=vc, device="cpu")
+
+
+def test_scores_carry_best_step(trained_tiny_run, ffpp_synth, vc):
+    """I6: mỗi dòng scores mang step của best.pt đã chấm."""
+    df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+    step = int(torch.load(trained_tiny_run / "best.pt", weights_only=False)["step"])
+    assert set(df.best_step) == {step} and df.best_step.dtype == "int64"

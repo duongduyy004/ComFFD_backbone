@@ -92,3 +92,16 @@ def test_run_info_ffpp_hashes(tmp_path):
     j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
     assert j["ffpp_config_hash"] == file_hash(ff) and j["ffpp_stage_hash"] is None
     assert j["model_commit"] == "abc" and j["model_revision"] is None
+
+
+def test_force_removes_scores_and_eval_info(tmp_path):
+    """I6: scores_*.parquet và eval_info.json là kết quả cũ: không force thì từ chối, force thì xóa."""
+    c = cfg(runs_root=tmp_path)
+    d = prepare_run_dir(c, resume=False, force=False)
+    names = ["scores_ffpp_test.parquet", "scores_compsynth_test.parquet", "scores_cdf2.parquet", "eval_info.json"]
+    for n in names:
+        (d / n).write_text("x")
+    with pytest.raises(FileExistsError):
+        prepare_run_dir(c, resume=False, force=False)
+    prepare_run_dir(c, resume=False, force=True)
+    assert not any((d / n).exists() for n in names)
