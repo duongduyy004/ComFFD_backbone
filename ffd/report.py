@@ -15,6 +15,7 @@ Quy tắc trung thực:
   seed {0,1,2} x mọi dataset đã gặp ở đâu đó; thiếu thì KHÔNG raise mà liệt kê
   đầu main.md (mục CẢNH BÁO) và đánh dấu ô bị ảnh hưởng. CI trong main.md luôn lấy từ seed 0 (thiếu -> "CI: thiếu seed 0").
 - Cùng (dataset, mode, split, seed) xuất hiện ở hai file scores -> ValueError; video có nhãn không nhất quán -> ValueError.
+- run_info["config"] của các run arm (aug/) chỉ được khác nhau ở ARM_FREE_KEYS; khóa khác lệch -> liệt kê dưới CẢNH BÁO.
 - per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), a0ff/real báo tỉ lệ chấm "fake" (score > 0).
 - Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed 0]"; một seed -> sd "n/a".
 Mô-đun không import torch. Trạng thái: chưa chạy thử.
@@ -100,6 +101,26 @@ def _runs_without_prereg(runs_root: Path) -> list:
         for p in sorted((runs_root / top).rglob("run_info.json")):
             if not json.loads(p.read_text(encoding="utf-8")).get("prereg_hash"):
                 out.append(p.parent.relative_to(runs_root).as_posix())
+    return out
+
+
+# Khóa config được phép khác nhau giữa các run arm (aug/); mọi khóa khác phải giống hệt.
+ARM_FREE_KEYS = ("mode", "seed", "runs_root", "num_workers")
+
+
+def _arm_config_diffs(runs_root: Path) -> list:
+    """[(khóa, {run: giá trị})] cho các khóa trong run_info["config"] khác nhau giữa các run dưới aug/."""
+    cfgs = {}
+    for p in sorted((runs_root / "aug").rglob("run_info.json")):
+        c = json.loads(p.read_text(encoding="utf-8")).get("config")
+        if c is not None:
+            cfgs[p.parent.relative_to(runs_root).as_posix()] = c
+    keys = sorted({k for c in cfgs.values() for k in c} - set(ARM_FREE_KEYS))
+    out = []
+    for k in keys:
+        vals = {r: json.dumps(c.get(k, "<thiếu>"), sort_keys=True, default=str) for r, c in cfgs.items()}
+        if len(set(vals.values())) > 1:
+            out.append((k, vals))
     return out
 
 
@@ -190,7 +211,8 @@ def build_report(runs_root) -> Path:
           f"Cột (video) = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}%, seed 0, n={N_BOOT}]; "
           "cột (frame) = AUC mức frame trung bình các seed ± sd.", ""]
     noprereg = _runs_without_prereg(runs_root)
-    if missing or noprereg:
+    cfg_diffs = _arm_config_diffs(runs_root)
+    if missing or noprereg or cfg_diffs:
         md += ["## CẢNH BÁO: thiếu kết quả (báo cáo chưa đầy đủ)", ""]
     if absent_arms:
         md += [f"Arm kỳ vọng VẮNG HOÀN TOÀN (không có file scores nào): {', '.join(absent_arms)}", ""]
@@ -200,6 +222,9 @@ def build_report(runs_root) -> Path:
     if noprereg:
         md += [f"Run KHÔNG có prereg_hash trong run_info.json ({len(noprereg)}; không thuộc thiết kế đã đăng ký trước):", ""]
         md += [f"- {r}" for r in noprereg] + [""]
+    if cfg_diffs:
+        md += [f"Config các run arm khác nhau ngoài {list(ARM_FREE_KEYS)} ({len(cfg_diffs)} khóa; so sánh arm KHÔNG có kiểm soát):", ""]
+        md += [f"- {k}: " + "; ".join(f"{r}={v}" for r, v in sorted(vals.items())) for k, vals in cfg_diffs] + [""]
     md += table(arm_names)
     if cf_names:
         md += ["", "## compffd (báo riêng, không ghép cặp với arm)", ""] + table(cf_names)

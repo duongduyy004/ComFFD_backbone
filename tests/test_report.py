@@ -242,3 +242,24 @@ def test_frame_auc_column_and_tid_clustered_ci(tmp_path):
     raw = [ln for ln in main.splitlines() if ln.startswith("| raw |")][0]
     g = sm[(sm["mode"] == "raw") & (sm.dataset == "compsynth_test")]
     assert f"{g.auc_frame.mean():.4f} ± {g.auc_frame.std(ddof=1):.4f}" in raw
+
+
+def test_arm_config_diff_warned(tree):
+    """I4: run_info["config"] của các arm chỉ được khác ở mode/seed/runs_root/num_workers; khác lr -> CẢNH BÁO."""
+    import json
+
+    base = {"mode": "raw", "seed": 0, "runs_root": "a", "num_workers": 4, "lr": 2e-4, "rho": 0.5}
+    for m in ARMS:
+        for s in range(3):
+            c = dict(base, mode=m, seed=s, runs_root=f"r{s}", num_workers=s)
+            (tree / "aug" / m / f"seed{s}" / "run_info.json").write_text(
+                json.dumps({"prereg_hash": "x", "config": c}), encoding="utf-8")
+    assert "CẢNH BÁO" not in (build_report(tree) / "main.md").read_text(encoding="utf-8")
+    p = tree / "aug" / "raw+sb" / "seed1" / "run_info.json"
+    j = json.loads(p.read_text(encoding="utf-8"))
+    j["config"]["lr"] = 1e-3
+    p.write_text(json.dumps(j), encoding="utf-8")
+    main = (build_report(tree) / "main.md").read_text(encoding="utf-8")
+    head = main.split("## CẢNH BÁO", 1)[1].split("| arm", 1)[0]
+    line = [ln for ln in head.splitlines() if ln.startswith("- lr:")]
+    assert line and "aug/raw+sb/seed1=0.001" in line[0] and "- rho:" not in head and "- seed:" not in head

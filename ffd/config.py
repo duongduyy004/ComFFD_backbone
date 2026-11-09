@@ -15,9 +15,10 @@ import yaml
 from compsynth_ff.composite import DEFAULT_T
 
 MODES = ("raw", "raw+comp", "raw+sb", "compffd")
-# Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI.
+# Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI. File prereg chỉ được chứa các khóa này.
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
-               "batch_size", "selfblend", "model_revision")
+               "batch_size", "grad_accum", "selfblend", "model_name", "model_revision", "head", "tap_layers",
+               "grad_checkpointing")
 _PATH_FIELDS = ("ffpp_config", "runs_root", "prereg")
 # Không băm đường dẫn (khác nhau giữa máy/OS); nội dung prereg đã có prereg_hash trong run_info.
 _HASH_SKIP = ("runs_root", "num_workers", "ffpp_config", "prereg")
@@ -70,9 +71,11 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
         locked = sorted(k for k in overrides if _is_locked(k))
         if locked:
             raise ValueError(f"Khóa bị prereg khóa, không được override: {locked}")
-        for k, v in _read_yaml(prereg).items():
-            if _is_locked(k):
-                d[k] = v
+        pre = _read_yaml(prereg)
+        bad = sorted(k for k in pre if not _is_locked(k))
+        if bad:
+            raise ValueError(f"File prereg {prereg} chứa khóa không thuộc PREREG_KEYS/lora_*: {bad}")
+        d.update(pre)
         d["prereg"] = prereg
     d.update(overrides)
     names = {f.name for f in dataclasses.fields(TrainConfig)}

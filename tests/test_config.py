@@ -90,3 +90,23 @@ def test_model_revision_hashed_and_locked(tmp_path):
     assert c.model_revision == "abc"
     with pytest.raises(ValueError, match="model_revision"):
         load_train_config(write_yaml(tmp_path, prereg=pre), overrides={"model_revision": "def"})
+
+
+def test_prereg_locks_all_result_keys_and_rejects_unknown(tmp_path):
+    """I4: grad_accum, model_name, model_revision, head, tap_layers, grad_checkpointing bị khóa; khóa lạ trong prereg -> lỗi."""
+    from ffd.config import PREREG_KEYS
+
+    for k in ("grad_accum", "model_name", "model_revision", "head", "tap_layers", "grad_checkpointing", "rho",
+              "batch_size"):
+        assert k in PREREG_KEYS
+    pre = write_yaml(tmp_path / "pre.yaml", grad_accum=2, tap_layers=[8], grad_checkpointing=False, lora_r=8)
+    cfg_path = write_yaml(tmp_path, prereg=pre)
+    c = load_train_config(cfg_path)
+    assert c.grad_accum == 2 and c.tap_layers == (8,) and c.grad_checkpointing is False and c.lora_r == 8
+    for k, v in (("grad_accum", 4), ("head", "binary"), ("tap_layers", [16]), ("model_name", "x")):
+        with pytest.raises(ValueError, match=k):
+            load_train_config(cfg_path, overrides={k: v})
+    for bad in ({"seed": 1}, {"foo": 1, "num_workers": 2}):
+        pre2 = write_yaml(tmp_path / "pre.yaml", lr=2e-4, **bad)
+        with pytest.raises(ValueError, match=sorted(bad)[0]):
+            load_train_config(write_yaml(tmp_path, prereg=pre2))
