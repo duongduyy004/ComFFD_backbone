@@ -28,13 +28,19 @@ def test_prep_cdf2(tmp_path):
     cfg = ff_cfg(tmp_path)
     out = prep_cross("cdf2", root, tmp_path / "out", cfg, FakeDetector())
     man = pd.read_parquet(out)
-    assert list(man.columns) == ["dataset", "video_id", "frame_idx", "label", "keep", "drop_reason"]
+    assert list(man.columns) == ["dataset", "video_id", "frame_idx", "label", "keep", "drop_reason", "error"]
     assert set(man.label) == {0, 1} and set(man.dataset) == {"cdf2"}
-    assert (man.drop_reason == "no_face").sum() == 1 and (man.drop_reason == "decode_error").sum() == 1
+    assert (man.drop_reason == "no_usable_frame").sum() == 1 and (man.drop_reason == "decode_error").sum() == 1
     assert man[man.keep].groupby("video_id").size().max() <= 32
-    row = man[man.drop_reason == "no_face"].iloc[0]
+    row = man[man.drop_reason == "no_usable_frame"].iloc[0]
     assert row.frame_idx == -1 and not row.keep and row.video_id == "YouTube-real__00002"
     kept = man[man.keep]
+    # video không có frame dùng được: đúng một dòng; video giữ lại vẫn có thể kèm dòng frame >= 0 với lý do theo frame
+    assert (man[man.drop_reason == "no_usable_frame"].frame_idx == -1).all()
+    assert (man[man.video_id == "YouTube-real__00002"].shape[0]) == 1
+    per_frame = man[(man.frame_idx >= 0) & ~man.keep]
+    assert set(per_frame.video_id) <= set(kept.video_id) and set(per_frame.drop_reason) <= {"not_selected", "no_face", "second_face", "small_face", "yaw"}
+    assert (per_frame.drop_reason == "not_selected").any()  # 40 frame -> 40 ứng viên, giữ 32
     assert kept.video_id.nunique() == 5
     for r in kept.itertuples():
         assert (tmp_path / "out" / "cdf2" / "crops" / r.video_id / f"{r.frame_idx:05d}.png").exists()
@@ -71,3 +77,14 @@ def test_cdf2_unknown_folder_raises(tmp_path):
     write_list(tmp_path, "1 Other/a.mp4\n")
     with pytest.raises(CrossListError):
         read_cdf2(tmp_path)
+
+
+def test_prep_per_video_exception_does_not_crash(tmp_path, monkeypatch):
+    import ffd.data.cross as cross
+    root = make_synth_cdf2(tmp_path / "Celeb_DFv2")
+    real = cross.read_frames
+    monkeypatch.setattr(cross, "read_frames", lambda path, idx: {k: v for k, v in real(path, idx).items() if k != idx[-1]})
+    man = pd.read_parquet(prep_cross("cdf2", root, tmp_path / "out", ff_cfg(tmp_path), FakeDetector()))
+    assert not man.keep.any()
+    de = man[man.drop_reason == "decode_error"]
+    assert de.video_id.nunique() == 7 and (de.frame_idx == -1).all() and "KeyError" in set(de.error)

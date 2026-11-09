@@ -5,6 +5,12 @@
 Nhãn lấy theo THƯ MỤC; số `l` trong List_of_testing_videos.txt chỉ để đối chiếu (quy ước 1 = real chưa kiểm chứng).
 Lưu ý trùng lặp: vòng lọc theo frame mô phỏng lại extract.extract_target (không có hàm dùng lại được);
 nếu extract.py đổi logic lọc thì phải đổi cả ở đây.
+Hợp đồng manifest: mỗi video có >= 1 dòng. Video không có frame nào qua lọc <=> đúng một dòng
+frame_idx == -1 và drop_reason == "no_usable_frame" (gồm cả không mặt, yaw, mặt nhỏ, mặt phụ). Lỗi giải mã / ngoại lệ
+bất kỳ theo video <=> một dòng frame_idx == -1, drop_reason == "decode_error", cột `error` ghi tên lớp ngoại lệ.
+Video có frame qua lọc có thể kèm dòng frame_idx >= 0 keep=False với lý do theo frame của choose_primary
+(no_face/second_face/small_face/yaw) hoặc "not_selected". Video có ít hơn cfg.min_keep frame giữ lại được GIỮ CÓ CHỦ Ý
+(tập test, không bỏ im lặng), khác với FF++ extract.
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
@@ -12,7 +18,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
-import cv2
 import pandas as pd
 from compsynth_ff.align import choose_primary, estimate_yaw_deg, similarity_to_template, warp
 from compsynth_ff.io_utils import write_parquet_atomic, write_png
@@ -20,7 +25,7 @@ from compsynth_ff.video import count_frames, keep_evenly, read_frames, select_ca
 
 LIST_NAME = "List_of_testing_videos.txt"
 _FOLDER_LABEL = {"Celeb-synthesis": 1, "Celeb-real": 0, "YouTube-real": 0}
-COLUMNS = ["dataset", "video_id", "frame_idx", "label", "keep", "drop_reason"]
+COLUMNS = ["dataset", "video_id", "frame_idx", "label", "keep", "drop_reason", "error"]
 
 
 class TestItem(NamedTuple):
@@ -68,13 +73,17 @@ READERS = {"cdf2": read_cdf2}
 
 
 def _video_rows(name, item, cfg, detector, n_frames, crops_dir) -> list:
-    base = dict(dataset=name, video_id=item.video_id, label=item.label)
+    base = dict(dataset=name, video_id=item.video_id, label=item.label, error="")
     try:
-        n = count_frames(item.path)
-        cands = select_candidates(n, cfg.n_candidates)
-        frames = read_frames(item.path, cands)
-    except (IOError, IndexError, cv2.error):
-        return [dict(base, frame_idx=-1, keep=False, drop_reason="decode_error")]
+        return _video_rows_inner(base, item, cfg, detector, n_frames, crops_dir)
+    except Exception as e:  # lỗi một video không được làm sập cả lượt chạy
+        return [dict(base, frame_idx=-1, keep=False, drop_reason="decode_error", error=type(e).__name__)]
+
+
+def _video_rows_inner(base, item, cfg, detector, n_frames, crops_dir) -> list:
+    n = count_frames(item.path)
+    cands = select_candidates(n, cfg.n_candidates)
+    frames = read_frames(item.path, cands)
     rows, ok = [], {}
     for f in cands:
         dets = detector.detect(frames[f])
@@ -86,7 +95,7 @@ def _video_rows(name, item, cfg, detector, n_frames, crops_dir) -> list:
         rows.append((f, why))
     keep = keep_evenly([f for f, w in rows if w == "ok"], n_frames)
     if not keep:
-        return [dict(base, frame_idx=-1, keep=False, drop_reason="no_face")]
+        return [dict(base, frame_idx=-1, keep=False, drop_reason="no_usable_frame")]
     keep_set = set(keep)
     out = []
     for f, why in rows:
