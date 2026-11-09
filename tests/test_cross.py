@@ -122,3 +122,13 @@ def test_prep_exception_after_writes_cleans_crops(tmp_path, monkeypatch):
     assert len(bad) == 1
     assert not (tmp_path / "out" / "cdf2" / "crops" / bad.iloc[0].video_id).exists()
     assert not man[man.video_id == bad.iloc[0].video_id].keep.any()
+
+
+def test_cdf2_duplicate_video_id_raises(tmp_path):
+    touch_videos(tmp_path, ["Celeb-real/a.mp4", "Celeb-real/a.mov"])
+    write_list(tmp_path, "1 Celeb-real/a.mp4\n1 Celeb-real/a.mp4\n")
+    with pytest.raises(CrossListError, match="dòng 1 và dòng 2"):
+        read_cdf2(tmp_path)
+    write_list(tmp_path, "1 Celeb-real/a.mp4\n1 Celeb-real/a.mov\n")
+    with pytest.raises(CrossListError, match="trùng video_id"):
+        read_cdf2(tmp_path)

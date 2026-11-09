@@ -47,7 +47,7 @@ def read_cdf2(root) -> list:
     lst = root / LIST_NAME
     if not lst.is_file():
         raise CrossListError(f"Không thấy {lst}")
-    items = []
+    items, seen = [], {}
     for n, raw in enumerate(lst.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line:
@@ -67,8 +67,11 @@ def read_cdf2(root) -> list:
         path = root / rel
         if not path.is_file():
             raise CrossListError(f"{lst.name} dòng {n}: file không có trên đĩa: {path}")
-        items.append(TestItem(video_id=str(Path(rel).with_suffix("")).replace("\\", "/").replace("/", "__"),
-                              path=path, label=label))
+        vid = str(Path(rel).with_suffix("")).replace("\\", "/").replace("/", "__")
+        if vid in seen:
+            raise CrossListError(f"{lst.name} dòng {seen[vid]} và dòng {n} trùng video_id {vid!r} ({rel})")
+        seen[vid] = n
+        items.append(TestItem(video_id=vid, path=path, label=label))
     return items
 
 
