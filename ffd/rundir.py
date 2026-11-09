@@ -18,6 +18,9 @@ def run_dir(cfg: TrainConfig) -> Path:
     return Path(cfg.runs_root) / "aug" / cfg.mode / f"seed{cfg.seed}"
 
 
+STALE = ("done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json")
+
+
 def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:
     d = run_dir(cfg)
     if (d / "best.pt").exists() and (d / "done.flag").exists() and not force:
@@ -28,6 +31,9 @@ def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:
         if old != config_hash(cfg):
             raise ValueError(f"config_hash khác run cũ ({old} != {config_hash(cfg)}); không resume")
     d.mkdir(parents=True, exist_ok=True)
+    if force and not resume:  # chạy lại từ đầu: xóa kết quả cũ để không lẫn vào run mới
+        for n in STALE:
+            (d / n).unlink(missing_ok=True)
     return d
 
 

@@ -51,3 +51,19 @@ def test_run_info_atomic_roundtrip(tmp_path):
     write_run_info(d, cfg(runs_root=tmp_path), {})
     assert json.loads((d / "run_info.json").read_text(encoding="utf-8"))["mode"] == "raw"
     assert [p.name for p in d.iterdir()] == ["run_info.json"]
+
+
+def test_force_removes_stale_artifacts_but_resume_keeps(tmp_path):
+    c = cfg(runs_root=tmp_path)
+    d = prepare_run_dir(c, resume=False, force=False)
+    stale = ["done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json"]
+    for n in stale:
+        (d / n).write_text("x")
+    write_run_info(d, c, {})
+    (d / "done.flag").unlink()
+    assert prepare_run_dir(c, resume=True, force=False) == d
+    assert all((d / n).exists() for n in stale if n != "done.flag")
+    (d / "done.flag").write_text("x")
+    prepare_run_dir(c, resume=False, force=True)
+    assert not any((d / n).exists() for n in stale)
+    assert (d / "run_info.json").exists()
