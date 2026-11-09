@@ -125,3 +125,16 @@ def test_detector_checkpointing_follows_cfg(tiny):
     assert grads and any(g.abs().sum() > 0 for g in grads)
     d2 = Detector(cfg(), vision_config=tiny["vision_config"])
     assert d2.trunk.base.base_model.model.encoder.gradient_checkpointing is False
+
+
+def test_binary_head_fp32_under_autocast(tiny):
+    """I7: dưới autocast bf16, head vẫn tính fp32 và logit trả về float32 (không lượng tử hóa bf16)."""
+    head = build_head("binary", 32)
+    cls = torch.randn(3, 32)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        assert torch.nn.Linear(32, 1)(cls).dtype == torch.bfloat16  # đối chứng: autocast CPU có hạ Linear xuống bf16
+        out = head({"cls": cls.bfloat16()})
+    assert out["logit"].dtype == torch.float32
+    d = Detector(cfg(), vision_config=tiny["vision_config"])
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        assert d(torch.randn(2, 3, 336, 336))["logit"].dtype == torch.float32
