@@ -234,3 +234,39 @@ def test_ffpp_video_all_keep_false_in_frames_flagged(trained_tiny_run, ffpp_synt
     row = df[df.flag == "no_usable_frame"]
     assert len(row) == 1 and row.video_id.iloc[0] == victim and row.logit.iloc[0] == 0.0
     assert set(df.video_id) == set(full.video_id)
+
+
+def test_run_info_records_model_and_ffpp_provenance(trained_tiny_run, ffpp_synth):
+    """I2/I3: run_info ghi model_revision (None khi chưa ghim), model_commit ("local" với vision_config),
+    ffpp_config_hash (None: file 'unused.yaml' không tồn tại) và ffpp_stage_hash = stage_hash(ff_cfg, 'render')."""
+    from compsynth_ff.config import stage_hash
+
+    info = json.loads((trained_tiny_run / "run_info.json").read_text(encoding="utf-8"))
+    assert info["model_revision"] is None and info["model_commit"] == "local"
+    assert info["ffpp_config_hash"] is None and info["ffpp_stage_hash"] == stage_hash(ffpp_synth, "render")
+
+
+def test_eval_refuses_changed_ffpp_artifacts(trained_tiny_run, ffpp_synth, vc, tmp_path):
+    """I3: ff_cfg lúc eval khác stage render, hoặc hash file config FF++ khác -> ValueError."""
+    import dataclasses
+
+    run = tmp_path / "r"
+    shutil.copytree(trained_tiny_run, run)
+    other = dataclasses.replace(ffpp_synth, jpeg_q=(ffpp_synth.jpeg_q[0], ffpp_synth.jpeg_q[1] - 1))
+    with pytest.raises(ValueError, match="ffpp_stage_hash"):
+        evaluate_run(run, ["ffpp_test"], {}, ff_cfg=other, vision_config=vc, device="cpu")
+    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
+    info["ffpp_config_hash"] = "deadbeef0000"
+    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="ffpp_config_hash"):
+        evaluate_run(run, ["ffpp_test"], {}, ff_cfg=ffpp_synth, vision_config=vc, device="cpu")
+
+
+def test_eval_refuses_model_commit_mismatch(trained_tiny_run, ffpp_synth, vc, tmp_path):
+    run = tmp_path / "r"
+    shutil.copytree(trained_tiny_run, run)
+    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
+    info["model_commit"] = "abc123"
+    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="commit"):
+        evaluate_run(run, ["ffpp_test"], {}, ff_cfg=ffpp_synth, vision_config=vc, device="cpu")

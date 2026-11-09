@@ -81,6 +81,9 @@ def _cmd_train(a):
     if not a.pilot and not cfg.prereg:
         raise SystemExit("Từ chối train: config không có prereg (thiếu, null hoặc rỗng). Run thật cần "
                          "--set prereg=configs/prereg_aug.yaml; pilot thì thêm --pilot.")
+    if not a.pilot and cfg.model_revision is None:
+        raise SystemExit("Từ chối train: model_revision chưa ghim (None). Đặt `model_revision: <commit>` trong prereg; "
+                         "`ffd.cli smoke` in ra commit đã resolve của model_name.")
     d = train(cfg, resume=a.resume, force=a.force)  # không allow_cpu
     print(d)
 
@@ -117,10 +120,14 @@ def _cmd_smoke(a):
     from .smoke import smoke
 
     cfg = _load_cfg(a.config, a.set)
+    import json
+
     try:
-        print(smoke(cfg, a.steps))
+        p = smoke(cfg, a.steps)
     except ValueError as e:
         raise SystemExit(f"Lỗi smoke: {e}") from e
+    print(p)
+    print(f"model_commit (ghi vào prereg là model_revision): {json.loads(p.read_text(encoding='utf-8'))['model_commit']}")
 
 
 def build_parser() -> argparse.ArgumentParser:

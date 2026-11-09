@@ -17,7 +17,7 @@ from compsynth_ff.composite import DEFAULT_T
 MODES = ("raw", "raw+comp", "raw+sb", "compffd")
 # Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI.
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
-               "batch_size", "selfblend")
+               "batch_size", "selfblend", "model_revision")
 _PATH_FIELDS = ("ffpp_config", "runs_root", "prereg")
 # Không băm đường dẫn (khác nhau giữa máy/OS); nội dung prereg đã có prereg_hash trong run_info.
 _HASH_SKIP = ("runs_root", "num_workers", "ffpp_config", "prereg")
@@ -39,6 +39,7 @@ class TrainConfig:
     split: str | None = None
     rho: float = 0.5
     model_name: str = "openai/clip-vit-large-patch14-336"
+    model_revision: str | None = None  # commit HF của model_name; run thật (không --pilot) bắt buộc ghim qua prereg
     lora_r: int = 16
     lora_alpha: int = 16
     lora_dropout: float = 0.0

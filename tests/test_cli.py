@@ -101,3 +101,11 @@ def test_smoke_steps_lt_2():
 
     with pytest.raises(ValueError):
         smoke(None, 1)
+
+
+def test_train_without_model_revision_refused(tmp_path):
+    """I2: run thật (không --pilot) có prereg nhưng model_revision None -> từ chối, nhắc ghim trong prereg."""
+    pre = tmp_path / "p.yaml"
+    pre.write_text("lr: 1.0e-4\n", encoding="utf-8")
+    r = run_cli(["train", "--config", str(_cfg(tmp_path, pre.as_posix()))])
+    assert r.returncode != 0 and "model_revision" in r.stderr and "Traceback" not in r.stderr

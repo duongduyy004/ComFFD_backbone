@@ -138,3 +138,22 @@ def test_binary_head_fp32_under_autocast(tiny):
     d = Detector(cfg(), vision_config=tiny["vision_config"])
     with torch.autocast("cpu", dtype=torch.bfloat16):
         assert d(torch.randn(2, 3, 336, 336))["logit"].dtype == torch.float32
+
+
+def test_from_pretrained_gets_revision_and_records_commit(tiny, monkeypatch):
+    """I2 (không mạng): revision truyền vào from_pretrained; commit lấy từ config._commit_hash."""
+    from transformers import CLIPVisionModel
+
+    seen = {}
+
+    def fake(name, **kw):
+        seen.update(kw, name=name)
+        m = CLIPVisionModel(tiny["vision_config"])
+        m.config._commit_hash = "c0ffee"
+        return m
+
+    monkeypatch.setattr(CLIPVisionModel, "from_pretrained", staticmethod(fake))
+    d = Detector(cfg(model_revision="c0ffee"))
+    assert seen == {"name": "openai/clip-vit-large-patch14-336", "revision": "c0ffee"}
+    assert d.trunk.commit == "c0ffee"
+    assert Detector(cfg(), vision_config=tiny["vision_config"]).trunk.commit == "local"

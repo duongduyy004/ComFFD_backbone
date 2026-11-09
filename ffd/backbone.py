@@ -1,6 +1,8 @@
 """Trunk CLIP ViT vision đóng băng + LoRA (peft) trên q_proj/v_proj; trả CLS và patch token nhiều tầng.
 
 `vision_config` cho phép test dựng model nhỏ ngẫu nhiên (không tải trọng số).
+`model_revision` truyền vào `from_pretrained(revision=...)`; `self.commit` = commit HF đã resolve
+(`vit.config._commit_hash`), hoặc "local" khi dựng từ vision_config.
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
@@ -11,15 +13,17 @@ from torch import nn
 
 class ClipLoraTrunk(nn.Module):
     def __init__(self, model_name, lora_r, lora_alpha, lora_dropout, lora_targets, tap_layers,
-                 grad_checkpointing, vision_config=None):
+                 grad_checkpointing, vision_config=None, model_revision=None):
         super().__init__()
         from peft import LoraConfig, get_peft_model
         from transformers import CLIPVisionModel
 
         if vision_config is not None:
             vit = CLIPVisionModel(vision_config)
+            self.commit = "local"
         else:
-            vit = CLIPVisionModel.from_pretrained(model_name)
+            vit = CLIPVisionModel.from_pretrained(model_name, revision=model_revision)
+            self.commit = getattr(vit.config, "_commit_hash", None)
         self.dim = vit.config.hidden_size
         self.num_layers = vit.config.num_hidden_layers
         self.tap_layers = tuple(tap_layers)

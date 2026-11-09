@@ -78,3 +78,15 @@ def test_config_hash_ignores_path_spelling(tmp_path):
     d = dataclasses.replace(a, prereg=Path("p/q.yaml"))
     e = dataclasses.replace(a, prereg=Path("/vol/prereg.yaml"))
     assert config_hash(a) == config_hash(b) == config_hash(c) == config_hash(d) == config_hash(e)
+
+
+def test_model_revision_hashed_and_locked(tmp_path):
+    """I2: model_revision vào config_hash và bị prereg khóa."""
+    a = load_train_config(write_yaml(tmp_path))
+    b = load_train_config(write_yaml(tmp_path), overrides={"model_revision": "abc"})
+    assert a.model_revision is None and b.model_revision == "abc" and config_hash(a) != config_hash(b)
+    pre = write_yaml(tmp_path / "pre.yaml", model_revision="abc", lr=2e-4)
+    c = load_train_config(write_yaml(tmp_path, prereg=pre))
+    assert c.model_revision == "abc"
+    with pytest.raises(ValueError, match="model_revision"):
+        load_train_config(write_yaml(tmp_path, prereg=pre), overrides={"model_revision": "def"})

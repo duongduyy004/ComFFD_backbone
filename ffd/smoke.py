@@ -1,6 +1,6 @@
 """Smoke trên GPU với ViT-L thật: đo VRAM đỉnh, giây/step; xuất ảnh để duyệt tham số T của self-blend.
 
-Ghi `<runs_root>/smoke/smoke.json` (peak_vram_gb, sec_per_step, batch_size, steps) và
+Ghi `<runs_root>/smoke/smoke.json` (peak_vram_gb, sec_per_step, batch_size, steps, model_revision, model_commit) và
 `smoke_samples/{comp,sb}_XX.png` (16 ảnh mỗi loại; chuẩn hóa CLIP đã đảo ngược, lưu RGB->BGR bằng cv2).
 Không ghi vào run dir của train, không chạm val/test.
 Trạng thái: chưa chạy thử.
@@ -93,7 +93,8 @@ def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
     dt = time.perf_counter() - t0
     res = {"peak_vram_gb": torch.cuda.max_memory_allocated() / 2**30,
            "sec_per_step": dt / max(steps - 1, 1) if steps > 1 else dt,
-           "batch_size": cfg.batch_size, "steps": steps}
+           "batch_size": cfg.batch_size, "steps": steps,
+           "model_revision": cfg.model_revision, "model_commit": model.trunk.commit}
     p = out / "smoke.json"
     p.write_text(json.dumps(res, indent=2), encoding="utf-8")
     return p

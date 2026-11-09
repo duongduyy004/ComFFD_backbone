@@ -5,6 +5,9 @@ Quy ước:
 - `datasets` ⊆ {ffpp_test, compsynth_test, cdf2}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
 - Chỉ nạp `best.pt` (qua `Detector.load_trainable`); cần `done.flag`; nếu run có prereg thì hash trong
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
+- Artifact tiền xử lý phải trùng lúc train: `ffpp_config_hash` (file config FF++) và `ffpp_stage_hash`
+  (stage_hash(ff_cfg, "render")) tính lại từ ff_cfg dùng khi eval; lệch -> ValueError. Commit HF của trunk dựng lại
+  phải bằng `model_commit` trong run_info.
 - Detector dựng lại từ `run_info.json["config"]` (cấu hình đầy đủ do `rundir.write_run_info` ghi; run cũ không có
   khóa này -> ValueError, không đoán).
 - ffpp_test: FFppRawCore(test) (tập video kỳ vọng từ frames.parquet subset test, hợp thêm discover_targets nếu data_root tồn tại;
@@ -34,6 +37,7 @@ from .config import TrainConfig, config_hash, file_hash
 from .data.transforms import eval_transform
 from .guards import allow_read
 from .model import Detector
+from .rundir import ffpp_hashes
 from .train import _autocast
 
 DATASETS = ("ffpp_test", "compsynth_test", "cdf2")
@@ -53,7 +57,9 @@ def _cfg_from_info(info: dict) -> TrainConfig:
     return TrainConfig(**d)
 
 
-def _check_run(run: Path) -> tuple[TrainConfig, dict]:
+def _check_run(run: Path, ff_cfg=None) -> tuple[TrainConfig, dict, object]:
+    """Kiểm run (done, best.pt, prereg, config_hash, artifact tiền xử lý); trả (cfg, info, ff_cfg).
+    ff_cfg None -> nạp từ cfg.ffpp_config (sau các kiểm tra rẻ)."""
     if not (run / "done.flag").exists():
         raise ValueError(f"Run chưa xong (thiếu done.flag): {run}")
     if not (run / "best.pt").exists():
@@ -71,7 +77,15 @@ def _check_run(run: Path) -> tuple[TrainConfig, dict]:
             raise ValueError(f"Hash prereg khác lúc train ({info['prereg_hash']} != {now}); không chấm điểm")
     if config_hash(cfg) != info.get("config_hash"):
         raise ValueError(f"config dựng lại có hash {config_hash(cfg)} != config_hash trong run_info {info.get('config_hash')}")
-    return cfg, info
+    for k in ("ffpp_config_hash", "ffpp_stage_hash"):
+        if k not in info:
+            raise ValueError(f"run_info.json thiếu {k} (run cũ); không xác định được artifact tiền xử lý")
+    ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
+    now = ffpp_hashes(cfg, ff_cfg)
+    for k, v in now.items():
+        if v != info[k]:
+            raise ValueError(f"{k} khác lúc train ({info[k]} != {v}): artifact tiền xử lý FF++ đã đổi; không chấm điểm")
+    return cfg, info, ff_cfg
 
 
 @torch.no_grad()
@@ -189,16 +203,16 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vi
         raise ValueError(f"datasets không hợp lệ {bad}; chỉ {list(DATASETS)}")
     if not datasets:
         raise ValueError("datasets rỗng")
-    cfg, _ = _check_run(run)
     if "cdf2" in datasets and "cdf2" not in cross_roots:
         raise ValueError("Thiếu cross_roots['cdf2']")
+    cfg, info, ff_cfg = _check_run(run, ff_cfg)
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    if any(d != "cdf2" for d in datasets):
-        ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
     # Seed như train() trước khi dựng model: với `vision_config` ngẫu nhiên (test) phần đóng băng không nằm trong
     # best.pt nên phải tái tạo y hệt; với CLIP thật (from_pretrained) không ảnh hưởng.
     torch.manual_seed(cfg.seed)
     model = Detector(cfg, vision_config=vision_config).to(device)
+    if model.trunk.commit != info.get("model_commit"):
+        raise ValueError(f"commit model khác lúc train ({info.get('model_commit')} != {model.trunk.commit})")
     ck = torch.load(run / "best.pt", map_location="cpu", weights_only=False)
     model.load_trainable(ck["trainable"])
     model.eval()

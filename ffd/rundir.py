@@ -12,6 +12,8 @@ from compsynth_ff.io_utils import write_json_atomic
 
 from .config import TrainConfig, config_hash, file_hash
 
+FFPP_STAGE = "render"  # stage cuối của compsynth_ff (gồm cả trường extract + select)
+
 
 def run_dir(cfg: TrainConfig) -> Path:
     if cfg.mode == "compffd":
@@ -60,8 +62,18 @@ def _gpu():
         return None
 
 
-def write_run_info(dir, cfg: TrainConfig, extra: dict) -> None:
-    """Ghi run_info.json. extra có thể chứa model_revision, split_file (đường dẫn để băm), ..."""
+def ffpp_hashes(cfg: TrainConfig, ff_cfg) -> dict:
+    """Định danh artifact tiền xử lý: hash file config FF++ (None nếu file không tồn tại) và
+    compsynth_ff.config.stage_hash(ff_cfg, "render") (None nếu không có ff_cfg)."""
+    from compsynth_ff.config import stage_hash
+
+    p = cfg.ffpp_config
+    return {"ffpp_config_hash": file_hash(p) if p is not None and Path(p).is_file() else None,
+            "ffpp_stage_hash": stage_hash(ff_cfg, FFPP_STAGE) if ff_cfg is not None else None}
+
+
+def write_run_info(dir, cfg: TrainConfig, extra: dict, ff_cfg=None) -> None:
+    """Ghi run_info.json. extra có thể chứa model_commit (commit HF đã resolve), split_file (đường dẫn để băm), ..."""
     extra = dict(extra or {})
     split_file = extra.pop("split_file", None)
     info = {
@@ -70,7 +82,9 @@ def write_run_info(dir, cfg: TrainConfig, extra: dict) -> None:
         "split_hash": file_hash(split_file) if split_file else None,
         "versions": _versions(),
         "model_name": cfg.model_name,
-        "model_revision": extra.pop("model_revision", None),
+        "model_revision": cfg.model_revision,
+        "model_commit": extra.pop("model_commit", None),
+        **ffpp_hashes(cfg, ff_cfg),
         "gpu": _gpu(),
         "seed": cfg.seed,
         "mode": cfg.mode,

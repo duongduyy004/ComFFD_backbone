@@ -79,3 +79,16 @@ def test_stale_artifacts_without_resume_or_force_refused(tmp_path):
         assert prepare_run_dir(c, resume=True, force=False) == d
         prepare_run_dir(c, resume=False, force=True)
         assert not (d / n).exists()
+
+
+def test_run_info_ffpp_hashes(tmp_path):
+    """I3: ffpp_config_hash = file_hash của file config FF++ khi file tồn tại; stage hash None khi không có ff_cfg."""
+    from ffd.config import file_hash
+
+    ff = tmp_path / "ff.yaml"
+    ff.write_text("a: 1\n", encoding="utf-8")
+    c = cfg(runs_root=tmp_path, ffpp_config=ff)
+    write_run_info(tmp_path / "r", c, {"model_commit": "abc"})
+    j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
+    assert j["ffpp_config_hash"] == file_hash(ff) and j["ffpp_stage_hash"] is None
+    assert j["model_commit"] == "abc" and j["model_revision"] is None

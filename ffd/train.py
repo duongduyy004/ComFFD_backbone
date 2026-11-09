@@ -222,13 +222,18 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     d = prepare_run_dir(cfg, resume=resume, force=force)
     if resume and not (d / "last.pt").exists():
         raise FileNotFoundError(f"Không có last.pt để resume trong {d}")
-    if not resume:
-        write_run_info(d, cfg, {"split_file": sp_file})
 
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
     model = Detector(cfg, vision_config=vision_config).to(device)
+    commit = model.trunk.commit
+    if not resume:  # ghi sau khi dựng model để có commit HF đã resolve
+        write_run_info(d, cfg, {"split_file": sp_file, "model_commit": commit}, ff_cfg=ff_cfg)
+    else:
+        info = json.loads((d / "run_info.json").read_text(encoding="utf-8")) if (d / "run_info.json").exists() else {}
+        if info.get("model_commit") != commit:
+            raise ValueError(f"model_commit khác run cũ ({info.get('model_commit')} != {commit}); không resume")
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     from transformers import get_cosine_schedule_with_warmup
