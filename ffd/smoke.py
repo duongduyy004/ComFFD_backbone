@@ -49,6 +49,8 @@ def _dump_samples(cfg: TrainConfig, ff_cfg, arm: str, source: str, out: Path) ->
 
 
 def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
+    if steps < 2:
+        raise ValueError(f"steps phải >= 2 (bỏ step đầu khỏi thời gian), nhận {steps}")
     if not torch.cuda.is_available():
         raise RuntimeError("smoke cần CUDA (ViT-L thật).")
     from compsynth_ff.config import load_config

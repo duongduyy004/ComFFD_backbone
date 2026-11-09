@@ -17,6 +17,7 @@ Mô-đun không import torch. Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
+import json
 from itertools import combinations
 from pathlib import Path
 
@@ -67,6 +68,16 @@ def _load(runs_root: Path):
             seen[key] = p
             tables[key] = _video_table(g, key)
     return tables
+
+
+def _runs_without_prereg(runs_root: Path) -> list:
+    """Run dưới aug/ và compffd/ có run_info.json nhưng prereg_hash rỗng (đường dẫn tương đối, posix)."""
+    out = []
+    for top in ("aug", "compffd"):
+        for p in sorted((runs_root / top).rglob("run_info.json")):
+            if not json.loads(p.read_text(encoding="utf-8")).get("prereg_hash"):
+                out.append(p.parent.relative_to(runs_root).as_posix())
+    return out
 
 
 def build_report(runs_root) -> Path:
@@ -141,10 +152,15 @@ def build_report(runs_root) -> Path:
     cf_names = sorted(summ[summ["mode"] == "compffd"].arm.unique())
     md = ["# AUC video theo arm x dataset", "",
           f"Ô = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}% theo video, seed 0, n={N_BOOT}].", ""]
+    noprereg = _runs_without_prereg(runs_root)
+    if missing or noprereg:
+        md += ["## CẢNH BÁO: thiếu kết quả (báo cáo chưa đầy đủ)", ""]
     if missing:
-        md += ["## CẢNH BÁO: thiếu kết quả (báo cáo chưa đầy đủ)", "",
-               f"Cần seed {list(REQUIRED_SEEDS)} x mọi dataset cho mỗi arm. Thiếu {len(missing)} tổ hợp (arm, seed, dataset):", ""]
+        md += [f"Cần seed {list(REQUIRED_SEEDS)} x mọi dataset cho mỗi arm. Thiếu {len(missing)} tổ hợp (arm, seed, dataset):", ""]
         md += [f"- {a}, seed {s_}, {d}" for a, s_, d in missing] + [""]
+    if noprereg:
+        md += [f"Run KHÔNG có prereg_hash trong run_info.json ({len(noprereg)}; không thuộc thiết kế đã đăng ký trước):", ""]
+        md += [f"- {r}" for r in noprereg] + [""]
     md += table(arm_names)
     if cf_names:
         md += ["", "## compffd (báo riêng, không ghép cặp với arm)", ""] + table(cf_names)

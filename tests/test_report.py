@@ -163,3 +163,16 @@ def test_two_runs_same_arm_seed_rejected(tree):
     fake_scores("raw", 0, split="X").to_parquet(d / "scores_ffpp_test.parquet", index=False)
     with pytest.raises(ValueError, match="cần đúng một"):
         build_report(tree)
+
+
+def test_report_warns_run_without_prereg_hash(tmp_path):
+    import json
+
+    for m in ARMS:
+        put(tmp_path, fake_scores(m, 0), m, 0)
+    for m, ph in (("raw", None), ("raw+comp", "abc123")):
+        (tmp_path / "aug" / m / "seed0" / "run_info.json").write_text(json.dumps({"prereg_hash": ph}))
+    main = (build_report(tmp_path) / "main.md").read_text(encoding="utf-8")
+    head = main.partition("## Chú thích")[0]
+    assert "## CẢNH BÁO" in head and "- aug/raw/seed0" in head
+    assert "aug/raw+comp/seed0" not in head

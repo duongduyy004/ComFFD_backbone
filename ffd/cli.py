@@ -58,14 +58,29 @@ def _make_detector():
         raise SystemExit(f"Thiếu facexlib/torch cho RetinaFace ({e}). Cài: pip install -e ../preprocessing[gpu]") from e
 
 
-def _cmd_train(a):
+def _load_cfg(config, sets, pilot: bool = False):
+    import dataclasses
+
+    import yaml
+
     from .config import load_train_config
-    from .train import train
 
     try:
-        cfg = load_train_config(a.config, parse_sets(a.set))
-    except ValueError as e:
+        cfg = load_train_config(config, parse_sets(sets))
+    except (ValueError, yaml.YAMLError) as e:
         raise SystemExit(f"Lỗi config: {e}") from e
+    if pilot:  # thư mục anh em, tách khỏi runs_root thật để không đè run seed 0 sau này
+        cfg = dataclasses.replace(cfg, runs_root=Path(str(cfg.runs_root).rstrip("/\\") + "_pilot"))
+    return cfg
+
+
+def _cmd_train(a):
+    from .train import train
+
+    cfg = _load_cfg(a.config, a.set, pilot=a.pilot)
+    if not a.pilot and not cfg.prereg:
+        raise SystemExit("Từ chối train: config không có prereg (thiếu, null hoặc rỗng). Run thật cần "
+                         "--set prereg=configs/prereg_aug.yaml; pilot thì thêm --pilot.")
     d = train(cfg, resume=a.resume, force=a.force)  # không allow_cpu
     print(d)
 
@@ -99,14 +114,13 @@ def _cmd_report(a):
 
 
 def _cmd_smoke(a):
-    from .config import load_train_config
     from .smoke import smoke
 
+    cfg = _load_cfg(a.config, a.set)
     try:
-        cfg = load_train_config(a.config, parse_sets(a.set))
+        print(smoke(cfg, a.steps))
     except ValueError as e:
-        raise SystemExit(f"Lỗi config: {e}") from e
-    print(smoke(cfg, a.steps))
+        raise SystemExit(f"Lỗi smoke: {e}") from e
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,6 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--set", action="append", default=[], metavar="k=v")
     t.add_argument("--resume", action="store_true")
     t.add_argument("--force", action="store_true")
+    t.add_argument("--pilot", action="store_true",
+                   help="ghi vào <runs_root>_pilot, cho phép thiếu prereg; kết quả pilot không vào report")
     t.set_defaults(fn=_cmd_train)
 
     e = sp.add_parser("eval")

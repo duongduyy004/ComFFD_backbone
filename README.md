@@ -24,8 +24,9 @@ pip install -e ../preprocessing[gpu] -e .
    ```
 4. **Pilot arm `raw`** (1 seed, chỉ xem FF++ val) để chốt `lr`, `total_steps`, `eval_every`, `ckpt_every`:
    ```bash
-   python -m ffd.cli train --config config.yaml --set mode=raw --set seed=0
+   python -m ffd.cli train --config config.yaml --pilot --set mode=raw --set seed=0
    ```
+   `--pilot` ghi vào `<runs_root>_pilot/` (thư mục anh em, không đè `runs/aug/raw/seed0` của run thật) và cho phép chưa có prereg. Kết quả pilot không bao giờ đưa vào report. Không có `--pilot` mà thiếu prereg thì `train` từ chối.
 5. **Viết `configs/prereg_aug.yaml`** (mẫu: `configs/prereg_aug.example.yaml`) rồi **không bao giờ sửa lại**. Khóa trong prereg (`rho`, `lr`, `weight_decay`, `warmup_frac`, `total_steps`, `eval_every`, `batch_size`, `selfblend`, `lora_*`) không override được bằng `--set`; hash prereg được kiểm lại lúc eval.
 6. **9 run** = 3 arm × seed 0,1,2:
    ```bash

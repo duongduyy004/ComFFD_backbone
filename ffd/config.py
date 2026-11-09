@@ -78,6 +78,8 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
     unknown = set(d) - names
     if unknown:
         raise ValueError(f"Khóa config không hợp lệ: {sorted(unknown)}")
+    if not d.get("prereg"):
+        d["prereg"] = None  # "" / null / thiếu đều là không prereg (Path("") sẽ thành "." và lọt qua kiểm tra)
     for k in _PATH_FIELDS:
         if d.get(k) is not None:
             d[k] = Path(d[k])
