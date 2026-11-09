@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from compsynth_ff.io_utils import write_json_atomic
+
 from .config import TrainConfig, config_hash, file_hash
 
 
@@ -63,6 +65,4 @@ def write_run_info(dir, cfg: TrainConfig, extra: dict) -> None:
         "mode": cfg.mode,
         **extra,
     }
-    p = Path(dir)
-    p.mkdir(parents=True, exist_ok=True)
-    (p / "run_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_json_atomic(info, Path(dir) / "run_info.json")

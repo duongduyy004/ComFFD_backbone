@@ -44,3 +44,10 @@ def test_write_run_info(tmp_path):
     j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
     assert j["config_hash"] == config_hash(c) and j["seed"] == 0 and j["mode"] == "raw"
     assert j["split_hash"] and j["prereg_hash"] is None and "torch" in j["versions"] and j["note"] == "x"
+
+
+def test_run_info_atomic_roundtrip(tmp_path):
+    d = tmp_path / "r"
+    write_run_info(d, cfg(runs_root=tmp_path), {})
+    assert json.loads((d / "run_info.json").read_text(encoding="utf-8"))["mode"] == "raw"
+    assert [p.name for p in d.iterdir()] == ["run_info.json"]
