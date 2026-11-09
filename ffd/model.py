@@ -11,11 +11,11 @@ from .heads import build_head
 
 
 class Detector(nn.Module):
-    def __init__(self, cfg, vision_config=None, grad_checkpointing=False):
+    def __init__(self, cfg, vision_config=None):
         super().__init__()
         self.cfg = cfg
         self.trunk = ClipLoraTrunk(cfg.model_name, cfg.lora_r, cfg.lora_alpha, cfg.lora_dropout,
-                                   cfg.lora_targets, cfg.tap_layers, grad_checkpointing,
+                                   cfg.lora_targets, cfg.tap_layers, cfg.grad_checkpointing,
                                    vision_config=vision_config)
         self.head = build_head(cfg.head, self.trunk.dim)  # dim lấy từ hidden_size, không hardcode
         n_train = sum(p.numel() for p in self.parameters() if p.requires_grad)

@@ -29,7 +29,7 @@ class ClipLoraTrunk(nn.Module):
         for p in vit.parameters():
             p.requires_grad_(False)
         if grad_checkpointing:
-            vit.gradient_checkpointing_enable()
+            vit.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             vit.enable_input_require_grads()
         lcfg = LoraConfig(r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
                           target_modules=list(lora_targets), bias="none")

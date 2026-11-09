@@ -44,6 +44,7 @@ class TrainConfig:
     lora_targets: tuple = ("q_proj", "v_proj")
     tap_layers: tuple = ()
     head: str = "binary"
+    grad_checkpointing: bool = True
     batch_size: int = 32
     lr: float = 2e-4
     weight_decay: float = 0.01

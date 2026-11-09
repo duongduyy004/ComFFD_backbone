@@ -16,7 +16,8 @@ from ffd.model import Detector  # noqa: E402
 
 def cfg(**kw):
     base = dict(ffpp_config="x.yaml", runs_root="runs", mode="raw", seed=0, total_steps=1,
-                eval_every=1, ckpt_every=1, lora_r=4, lora_alpha=8, head="binary")
+                eval_every=1, ckpt_every=1, lora_r=4, lora_alpha=8, head="binary",
+                grad_checkpointing=False)
     base.update(kw)
     return TrainConfig(**base)
 
