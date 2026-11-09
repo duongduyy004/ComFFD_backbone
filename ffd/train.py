@@ -9,8 +9,13 @@ Quy ước:
   Step cuối luôn val và lưu last.pt.
 - Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. `allow_cpu=True` chỉ dùng trong test
   (CPU, không autocast). `ff_cfg` cho phép test truyền Config tổng hợp thay vì nạp từ cfg.ffpp_config.
-- Val: arm -> FFppRawCore(val); compffd -> EvalCore(val) lọc real + ô seen của split (cfg.split là
-  đường dẫn file split, giống build_train_dataset). video_id compffd: "{tid}|real" hoặc "{tid}|{region}|{method}".
+- Val: arm -> FFppRawCore(val); compffd -> EvalCore(val) lọc real + ô seen của split (cfg.split là TÊN,
+  file là <out_root>/splits/<split>.json qua `config.split_path`). video_id compffd: "{tid}|real" hoặc
+  "{tid}|{region}|{method}". `allow_read("train", ...)` gọi ngay trước khi mở từng tập.
+- grad_accum: một step luôn gồm đúng `grad_accum` micro-batch, kể cả khi vượt biên epoch (bộ tích lũy nằm
+  ngoài vòng epoch) nên vị trí resume = step * grad_accum micro-batch là chính xác.
+- Resume: best.pt mồ côi (step > last.step) được ghi lại từ `best_state` trong last.pt (hoặc xóa nếu chưa có best).
+- AUC val không hữu hạn (một lớp, NaN) -> ValueError, không rơi xuống so sánh BCE.
 - Chọn best: AUC video cao hơn hẳn (> tol); hòa trong tol thì BCE thấp hơn.
 Trạng thái: chưa chạy thử (chỉ test CPU với CLIP tí hon ngẫu nhiên).
 """
@@ -28,10 +33,10 @@ import torch
 from compsynth_ff.config import load_config
 from compsynth_ff.io_utils import write_json_atomic
 
-from .config import TrainConfig
+from .config import TrainConfig, split_path
 from .data.arms import build_train_dataset
 from .data.transforms import eval_transform
-from .guards import allow_read, val_set_for
+from .guards import allow_read
 from .model import Detector
 from .rundir import prepare_run_dir, run_dir, write_run_info  # noqa: F401  (run_dir cho test/tiện ích)
 from .stats import auc, video_scores
@@ -49,18 +54,18 @@ def is_better(new, best, tol: float = 1e-4) -> bool:
 
 
 # ---------------------------------------------------------------- val
-def _val_items(cfg: TrainConfig, ff_cfg):
+def _val_items(cfg: TrainConfig, ff_cfg, subset: str = "val"):
     """Trả (core, rows); rows = list (index trong core, video_id, frame_idx, label)."""
     from compsynth_ff import dataset as D
 
-    allow_read("train", val_set_for(cfg))
+    allow_read("train", f"{'compsynth' if cfg.mode == 'compffd' else 'ffpp'}_{subset}")
     if cfg.mode != "compffd":
-        core = D.FFppRawCore(ff_cfg, "val")
+        core = D.FFppRawCore(ff_cfg, subset)
         rows = [(i, f"{t}_{s}", int(f), 0 if s == "real" else 1) for i, (t, f, s) in enumerate(core.items)]
         return core, rows
-    sp = json.loads(Path(cfg.split).read_text(encoding="utf-8"))
+    sp = json.loads(split_path(cfg, ff_cfg).read_text(encoding="utf-8"))
     seen = {tuple(x) for x in sp["seen"]}
-    core = D.EvalCore(ff_cfg, "val")
+    core = D.EvalCore(ff_cfg, subset)
     rows = []
     for i in range(len(core)):
         m = core.meta(i)
@@ -78,11 +83,12 @@ def _autocast(device):
 
 
 @torch.no_grad()
-def val_scores(model, cfg: TrainConfig, ff_cfg, batch_size: int | None = None, device=None) -> pd.DataFrame:
+def val_scores(model, cfg: TrainConfig, ff_cfg, batch_size: int | None = None, device=None,
+               subset: str = "val") -> pd.DataFrame:
     """[video_id, frame_idx, label, logit]; model trở về chế độ cũ (train/eval) sau khi tính."""
     device = torch.device(device) if device is not None else next(model.parameters()).device
     bs = batch_size or cfg.batch_size
-    core, rows = _val_items(cfg, ff_cfg)
+    core, rows = _val_items(cfg, ff_cfg, subset)
     was = model.training
     model.eval()
     logits = []
@@ -105,8 +111,15 @@ def _bce(df: pd.DataFrame) -> float:
 
 
 def _val_metrics(df: pd.DataFrame) -> dict:
+    if df.label.nunique() < 2:
+        raise ValueError("Val chỉ có một lớp: không tính được AUC")
+    if not np.isfinite(df.logit.to_numpy(np.float64)).all():
+        raise ValueError("Val có logit không hữu hạn")
     v = video_scores(df)
-    return {"auc_video": auc(v.label, v.score), "auc_frame": auc(df.label, df.logit), "bce": _bce(df)}
+    m = {"auc_video": auc(v.label, v.score), "auc_frame": auc(df.label, df.logit), "bce": _bce(df)}
+    if not all(np.isfinite(x) for x in m.values()):
+        raise ValueError(f"Metric val không hữu hạn: {m}")
+    return m
 
 
 # ---------------------------------------------------------------- tiện ích
@@ -167,6 +180,20 @@ def _video_of(ds, idx: int) -> str:
     return str(c.real_frames[k % len(c.real_frames)][0])
 
 
+def _reconcile_best(path: Path, step: int, best, best_state) -> None:
+    """Sau resume, best.pt phải khớp `best` trong last.pt. best.pt ghi ở step > last.step (mồ côi) bị bỏ;
+    nếu last.pt có best_state thì ghi lại best.pt từ đó, không thì xóa (chưa có best)."""
+    on_disk = None
+    if path.exists():
+        on_disk = int(torch.load(path, map_location="cpu", weights_only=False)["step"])
+    want = None if best is None else int(best["step"])
+    if on_disk == want:
+        return
+    path.unlink(missing_ok=True)
+    if best is not None and best_state is not None:
+        _atomic_save({"trainable": best_state, **best}, path)
+
+
 # ---------------------------------------------------------------- train
 def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision_config=None,
           ff_cfg=None, allow_cpu: bool = False, log_every: int = 20, device=None) -> Path:
@@ -175,14 +202,15 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     if not has_cuda and not allow_cpu:
         raise RuntimeError("Không có CUDA: train cần GPU (allow_cpu=True chỉ dành cho test).")
     device = torch.device(device or ("cuda" if has_cuda else "cpu"))
-    allow_read("train", val_set_for(cfg))
     ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
+    allow_read("train", "compsynth_train" if cfg.mode == "compffd" else "ffpp_train")
+    sp_file = split_path(cfg, ff_cfg) if cfg.mode == "compffd" else None  # lỗi sớm nếu thiếu split
 
     d = prepare_run_dir(cfg, resume=resume, force=force)
     if resume and not (d / "last.pt").exists():
         raise FileNotFoundError(f"Không có last.pt để resume trong {d}")
     if not resume:
-        write_run_info(d, cfg, {"split_file": cfg.split if cfg.mode == "compffd" else None})
+        write_run_info(d, cfg, {"split_file": sp_file})
 
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -193,38 +221,41 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     from transformers import get_cosine_schedule_with_warmup
     sched = get_cosine_schedule_with_warmup(opt, int(cfg.warmup_frac * cfg.total_steps), cfg.total_steps)
 
-    step, best = 0, None  # best = {"step", "auc_video", "bce"} | None
+    step, best, best_state = 0, None, None  # best = {"step", "auc_video", "bce"} | None
     if resume:
         ck = torch.load(d / "last.pt", map_location="cpu", weights_only=False)
         model.load_trainable(ck["trainable"])
         opt.load_state_dict(ck["optimizer"])
         sched.load_state_dict(ck["scheduler"])
         _set_rng_state(ck["rng"])
-        step, best = int(ck["step"]), ck["best"]
+        step, best, best_state = int(ck["step"]), ck["best"], ck.get("best_state")
+        _reconcile_best(d / "best.pt", step, best, best_state)
         _truncate_jsonl(d / "val_curve.jsonl", step)
         _truncate_jsonl(d / "train_log.jsonl", step)
 
     ds = build_train_dataset(cfg, ff_cfg=ff_cfg)
     accum = cfg.grad_accum
     per_epoch = len(_epoch_batches(len(ds), cfg.batch_size, cfg.seed, 0))
-    if per_epoch < accum:
-        raise ValueError(f"Dữ liệu quá nhỏ: {per_epoch} batch/epoch < grad_accum {accum}")
+    if per_epoch < 1:
+        raise ValueError("Dữ liệu quá nhỏ: không đủ một batch/epoch")
     micro = step * accum  # số micro-batch đã dùng
     model.train()
 
     def do_val(s: int):
-        nonlocal best
+        nonlocal best, best_state
         m = _val_metrics(val_scores(model, cfg, ff_cfg, device=device))
         _append_jsonl(d / "val_curve.jsonl", {"step": s, **m})
         if is_better((m["auc_video"], m["bce"]), None if best is None else (best["auc_video"], best["bce"])):
             best = {"step": s, "auc_video": m["auc_video"], "bce": m["bce"]}
-            _atomic_save({"trainable": model.trainable_state_dict(), **best}, d / "best.pt")
+            best_state = model.trainable_state_dict()
+            _atomic_save({"trainable": best_state, **best}, d / "best.pt")
 
     def fail(s: int, vids: list, loss):
         err = {"step": s, "loss": float(loss), "video_ids": sorted(set(vids))}
         write_json_atomic(err, d / "error.json")
         raise FloatingPointError(f"Loss không hữu hạn ở step {s}: {float(loss)}; video_id={err['video_ids']}")
 
+    acc_loss, acc_n, acc_vids = 0.0, 0, []  # ngoài vòng epoch: một step luôn đủ `accum` micro-batch
     while step < cfg.total_steps:
         epoch, off = divmod(micro, per_epoch)
         ds.set_epoch(epoch)
@@ -232,7 +263,6 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         loader = torch.utils.data.DataLoader(
             ds, batch_sampler=batches, num_workers=cfg.num_workers, persistent_workers=False,
             worker_init_fn=_worker_init(cfg.seed) if cfg.num_workers else None)
-        acc_loss, acc_n, acc_vids = 0.0, 0, []
         for bi, batch in enumerate(loader):
             x = batch["image"].to(device)
             tg = {k: v.to(device) for k, v in batch["targets"].items() if torch.is_tensor(v)}
@@ -262,7 +292,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             if step % cfg.ckpt_every == 0 or last:
                 save_last(d / "last.pt", {"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
                                           "scheduler": sched.state_dict(), "rng": _rng_state(),
-                                          "step": step, "best": best})
+                                          "step": step, "best": best, "best_state": best_state})
             if last:
                 break
     (d / "done.flag").write_text(f"step={step}\n", encoding="utf-8")

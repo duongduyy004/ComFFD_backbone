@@ -44,8 +44,54 @@ def test_train_cannot_read_test():
     for w in ("ffpp_test", "compsynth_test", "cross"):
         with pytest.raises(LeakageError):
             allow_read("train", w)
-    allow_read("train", "ffpp_val_raw")
+    for w in ("ffpp_test_raw", "ffpp_val_raw", "whatever"):  # chỉ các nguồn train/val đã biết
+        with pytest.raises(LeakageError):
+            allow_read("train", w)
+    for w in ("ffpp_train", "ffpp_val", "compsynth_train", "compsynth_val"):
+        allow_read("train", w)
     allow_read("eval", "ffpp_test")
+
+
+def write_split(ffpp, name, seen, unseen=()):
+    sp = Path(ffpp.out_root) / "splits" / f"{name}.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({"seen": [list(c) for c in seen], "unseen": [list(c) for c in unseen]}))
+    return sp
+
+
+def test_val_items_reject_test_subset(ffpp_synth, tmp_path):
+    with pytest.raises(LeakageError):
+        T._val_items(mkcfg(), ffpp_synth, "test")
+    write_split(ffpp_synth, "FF-G", sorted(TrainCore(ffpp_synth).allowed))
+    with pytest.raises(LeakageError):
+        T._val_items(mkcfg(mode="compffd", split="FF-G"), ffpp_synth, "test")
+
+
+def test_val_metrics_single_class_or_nan_raises():
+    import pandas as pd
+
+    one = pd.DataFrame({"video_id": ["a", "b"], "frame_idx": [0, 0], "label": [0, 0], "logit": [0.1, 0.2]})
+    with pytest.raises(ValueError, match="một lớp"):
+        T._val_metrics(one)
+    bad = pd.DataFrame({"video_id": ["a", "b"], "frame_idx": [0, 0], "label": [0, 1], "logit": [0.1, float("nan")]})
+    with pytest.raises(ValueError, match="hữu hạn"):
+        T._val_metrics(bad)
+
+
+def test_split_path_and_name_validation(ffpp_synth, tmp_path):
+    from ffd.config import load_train_config, split_path
+
+    with pytest.raises(FileNotFoundError):
+        split_path(mkcfg(mode="compffd", split="nope"), ffpp_synth)
+    sp = write_split(ffpp_synth, "FF-N", [("a", "b")])
+    assert split_path(mkcfg(mode="compffd", split="FF-N"), ffpp_synth) == sp
+    y = tmp_path / "c.yaml"
+    for bad in ("a/b", "a\\b"):
+        y.write_text("ffpp_config: x.yaml\nruns_root: r\nmode: compffd\nseed: 0\n"
+                     "total_steps: 1\neval_every: 1\nckpt_every: 1\n"
+                     "split: " + json.dumps(bad) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="TÊN"):
+            load_train_config(y)
 
 
 def test_val_set_for():
@@ -88,9 +134,8 @@ def test_val_scores_compffd_filters_to_seen(ffpp_synth, tiny, tmp_path):
     core = TrainCore(ffpp_synth)
     cells = sorted(core.allowed)
     seen, unseen = cells[:1], cells[1:]
-    sp = tmp_path / "split.json"
-    sp.write_text(json.dumps({"seen": [list(c) for c in seen], "unseen": [list(c) for c in unseen]}))
-    cfg = mkcfg(mode="compffd", split=str(sp))
+    write_split(ffpp_synth, "FF-V", seen, unseen)
+    cfg = mkcfg(mode="compffd", split="FF-V")
     m = Detector(cfg, vision_config=tiny["vision_config"])
     df = val_scores(m, cfg, ffpp_synth, batch_size=4, device="cpu")
     ec = EvalCore(ffpp_synth, "val")
@@ -157,3 +202,76 @@ def test_force_rerun_clears_stale(ffpp_synth, tiny, tmp_path):
         run(cfg, ffpp_synth, tiny)
     d = run(cfg, ffpp_synth, tiny, force=True)
     assert [r["step"] for r in read_jsonl(d / "val_curve.jsonl")] == [4]
+
+
+def test_compffd_end_to_end(ffpp_synth, tiny, tmp_path):
+    write_split(ffpp_synth, "FF-E", sorted(TrainCore(ffpp_synth).allowed))
+    cfg = mkcfg(mode="compffd", split="FF-E", runs_root=tmp_path, total_steps=4, eval_every=2, ckpt_every=2)
+    d = run(cfg, ffpp_synth, tiny)
+    assert d == tmp_path / "compffd" / "FF-E" / "seed0"
+    assert {"best.pt", "last.pt", "done.flag"} <= set(os.listdir(d))
+    assert [r["step"] for r in read_jsonl(d / "val_curve.jsonl")] == [2, 4]
+    info = json.loads((d / "run_info.json").read_text(encoding="utf-8"))
+    assert info["split_hash"]
+
+
+def test_restart_without_force_or_resume_refused(ffpp_synth, tiny, tmp_path, monkeypatch):
+    cfg = mkcfg(runs_root=tmp_path, total_steps=4)
+    orig = T.save_last
+
+    def boom(path, payload):
+        orig(path, payload)
+        raise KeyboardInterrupt("crash")
+
+    monkeypatch.setattr(T, "save_last", boom)
+    with pytest.raises(KeyboardInterrupt):
+        run(cfg, ffpp_synth, tiny)
+    monkeypatch.setattr(T, "save_last", orig)
+    with pytest.raises(FileExistsError):  # last.pt, val_curve.jsonl còn lại, không resume/force
+        run(cfg, ffpp_synth, tiny)
+
+
+def test_orphan_best_after_resume(ffpp_synth, tiny, tmp_path, monkeypatch):
+    """eval_every=2, ckpt_every=4: best ghi ở step 6 > last.step 4 khi crash; sau resume best.pt phải về step 4."""
+    cfg = mkcfg(runs_root=tmp_path, total_steps=8, eval_every=2, ckpt_every=4)
+    calls = [0]
+
+    def fake_metrics(df):
+        calls[0] += 1
+        if calls[0] == 4:  # val ở step 8, sau khi step 6 đã ghi best.pt
+            raise KeyboardInterrupt("crash")
+        return {"auc_video": 0.5 + 0.01 * calls[0] if calls[0] < 4 else 0.5, "auc_frame": 0.5, "bce": 0.7}
+
+    monkeypatch.setattr(T, "_val_metrics", fake_metrics)
+    with pytest.raises(KeyboardInterrupt):
+        run(cfg, ffpp_synth, tiny)
+    d = T.run_dir(cfg)
+    assert torch.load(d / "best.pt", weights_only=False)["step"] == 6  # mồ côi
+    run(cfg, ffpp_synth, tiny, resume=True)
+    best = torch.load(d / "best.pt", weights_only=False)
+    rows = {r["step"]: r for r in read_jsonl(d / "val_curve.jsonl")}
+    assert best["step"] == 4 and best["step"] in rows
+    assert best["auc_video"] == pytest.approx(rows[4]["auc_video"])
+    assert (d / "done.flag").exists()
+
+
+def test_grad_accum_across_epoch_resume(ffpp_synth, tiny, tmp_path, monkeypatch):
+    """bs=6 -> 21 batch/epoch (lẻ), accum=2: step 11 vắt qua biên epoch; resume sau biên vẫn khớp run liên tục."""
+    kw = dict(batch_size=6, grad_accum=2, total_steps=14, eval_every=7, ckpt_every=6)
+    full = losses(run(mkcfg(runs_root=tmp_path / "a", **kw), ffpp_synth, tiny))
+    orig, st = T.save_last, {}
+
+    def crashing(path, payload):
+        orig(path, payload)
+        if payload["step"] == 12 and not st:
+            st["x"] = 1
+            raise KeyboardInterrupt("crash")
+
+    monkeypatch.setattr(T, "save_last", crashing)
+    cb = mkcfg(runs_root=tmp_path / "b", **kw)
+    with pytest.raises(KeyboardInterrupt):
+        run(cb, ffpp_synth, tiny)
+    monkeypatch.setattr(T, "save_last", orig)
+    run(cb, ffpp_synth, tiny, resume=True)
+    res = losses(T.run_dir(cb))
+    assert len(res) == 14 and res == pytest.approx(full, rel=1e-5)

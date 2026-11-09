@@ -25,6 +25,10 @@ def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:
     d = run_dir(cfg)
     if (d / "best.pt").exists() and (d / "done.flag").exists() and not force:
         raise FileExistsError(f"Run đã xong: {d} (dùng force để chạy lại)")
+    if not resume and not force:
+        left = [n for n in STALE if (d / n).exists()]
+        if left:
+            raise FileExistsError(f"Thư mục run còn kết quả cũ {left} trong {d}; dùng resume hoặc force")
     info = d / "run_info.json"
     if resume and info.exists():
         old = json.loads(info.read_text(encoding="utf-8")).get("config_hash")

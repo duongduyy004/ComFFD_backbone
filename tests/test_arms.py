@@ -1,5 +1,6 @@
 """Test Dataset theo arm, transforms, compffd. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA)."""
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -115,12 +116,13 @@ def test_flip_half():
 
 def test_compffd_mode(ffpp_synth, tmp_path):
     core = TrainCore(ffpp_synth)
-    sp = tmp_path / "split.json"
+    sp = Path(ffpp_synth.out_root) / "splits" / "FF-T.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps({"seen": sorted(map(list, core.allowed)), "unseen": []}), encoding="utf-8")
     from ffd.config import TrainConfig
 
     cfg = TrainConfig(ffpp_config=tmp_path / "ff.yaml", runs_root=tmp_path, mode="compffd", seed=0,
-                      total_steps=1, eval_every=1, ckpt_every=1, split=str(sp))
+                      total_steps=1, eval_every=1, ckpt_every=1, split="FF-T")
     ds = build_train_dataset(cfg, ff_cfg=ffpp_synth)
     assert len(ds) == 2 * len(core.real_frames)
     it = ds[1]

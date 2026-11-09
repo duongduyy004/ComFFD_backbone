@@ -67,3 +67,15 @@ def test_force_removes_stale_artifacts_but_resume_keeps(tmp_path):
     prepare_run_dir(c, resume=False, force=True)
     assert not any((d / n).exists() for n in stale)
     assert (d / "run_info.json").exists()
+
+
+def test_stale_artifacts_without_resume_or_force_refused(tmp_path):
+    c = cfg(runs_root=tmp_path)
+    for n in ("last.pt", "best.pt", "val_curve.jsonl", "train_log.jsonl", "error.json"):
+        d = prepare_run_dir(c, resume=False, force=False)
+        (d / n).write_text("x")
+        with pytest.raises(FileExistsError):
+            prepare_run_dir(c, resume=False, force=False)
+        assert prepare_run_dir(c, resume=True, force=False) == d
+        prepare_run_dir(c, resume=False, force=True)
+        assert not (d / n).exists()

@@ -18,6 +18,7 @@ from compsynth_ff.guards import assert_subset
 from compsynth_ff.regions import REGIONS
 from compsynth_ff.select_cells import load_frames
 
+from ..config import split_path
 from .recipe import sample_item
 from .transforms import train_transform
 
@@ -116,5 +117,5 @@ def build_train_dataset(cfg, ff_cfg=None):
     if ff_cfg is None:
         ff_cfg = load_config(cfg.ffpp_config)
     if cfg.mode == "compffd":
-        return CompFFDDataset(ff_cfg, cfg.split, cfg.seed)
+        return CompFFDDataset(ff_cfg, split_path(cfg, ff_cfg), cfg.seed)
     return ArmTrainDataset(ff_cfg, cfg.mode, cfg.rho, cfg.seed, cfg.selfblend)

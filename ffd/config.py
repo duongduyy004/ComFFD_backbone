@@ -93,7 +93,17 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
         raise ValueError(f"mode phải thuộc {MODES}, nhận {cfg.mode!r}")
     if cfg.mode == "compffd" and not cfg.split:
         raise ValueError("mode=compffd bắt buộc có split")
+    if cfg.split and ("/" in cfg.split or "\\" in cfg.split):
+        raise ValueError(f"split phải là TÊN (vd FF-03), không phải đường dẫn: {cfg.split!r}")
     return cfg
+
+
+def split_path(cfg: TrainConfig, ff_cfg) -> Path:
+    """<ff_cfg.out_root>/splits/<split>.json; không có file -> FileNotFoundError."""
+    p = Path(ff_cfg.out_root) / "splits" / f"{cfg.split}.json"
+    if not p.exists():
+        raise FileNotFoundError(f"Không thấy file split: {p}")
+    return p
 
 
 def config_hash(cfg: TrainConfig) -> str:

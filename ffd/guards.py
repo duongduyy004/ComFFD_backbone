@@ -10,15 +10,15 @@ from compsynth_ff.guards import LeakageError  # dùng lại cùng lớp lỗi c�
 
 __all__ = ["LeakageError", "allow_read", "val_set_for"]
 
-_TRAIN_FORBIDDEN = {"ffpp_test", "compsynth_test", "cross"}
+_TRAIN_ALLOWED = {"ffpp_train", "compsynth_train", "ffpp_val", "compsynth_val"}
 
 
 def allow_read(stage: Literal["train", "eval"], what: str) -> None:
-    """Giai đoạn `train` đọc `ffpp_test`, `compsynth_test` hoặc `cross` -> LeakageError."""
+    """Giai đoạn `train` chỉ được đọc nguồn train/val (ffpp_*, compsynth_*); test, cross hay lạ -> LeakageError."""
     if stage not in ("train", "eval"):
         raise ValueError(f"stage phải là 'train' hoặc 'eval', nhận {stage!r}")
-    if stage == "train" and what in _TRAIN_FORBIDDEN:
-        raise LeakageError(f"Giai đoạn train không được đọc {what!r} (chống leakage)")
+    if stage == "train" and what not in _TRAIN_ALLOWED:
+        raise LeakageError(f"Giai đoạn train không được đọc {what!r} (chống leakage); chỉ {sorted(_TRAIN_ALLOWED)}")
 
 
 def val_set_for(cfg) -> Literal["ffpp_val_raw", "compsynth_val_seen"]:
