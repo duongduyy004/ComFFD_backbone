@@ -19,7 +19,8 @@ MODES = ("raw", "raw+comp", "raw+sb", "compffd")
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
                "batch_size", "selfblend")
 _PATH_FIELDS = ("ffpp_config", "runs_root", "prereg")
-_HASH_SKIP = ("runs_root", "num_workers")
+# Không băm đường dẫn (khác nhau giữa máy/OS); nội dung prereg đã có prereg_hash trong run_info.
+_HASH_SKIP = ("runs_root", "num_workers", "ffpp_config", "prereg")
 
 
 def _is_locked(k: str) -> bool:

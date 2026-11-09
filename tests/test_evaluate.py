@@ -156,12 +156,16 @@ def test_ffpp_test_video_without_kept_frames_flagged(trained_tiny_run, ffpp_synt
 
 
 def test_ffpp_test_unexpected_video_rejected(trained_tiny_run, ffpp_synth, vc, monkeypatch):
-    import compsynth_ff.pairs as P
+    import dataclasses
 
-    real = P.discover_targets
-    monkeypatch.setattr(P, "discover_targets", lambda cfg: [t for t in real(cfg) if t.subset != "test"])
+    import compsynth_ff.select_cells as SC
+
+    cfg = dataclasses.replace(ffpp_synth, data_root=Path("khong_ton_tai_MINH_HOA"))
+    orig = SC.load_frames
+    # tập kỳ vọng (SC.load_frames) thiếu một video mà FFppRawCore (dataset.load_frames) vẫn chấm
+    monkeypatch.setattr(SC, "load_frames", lambda c: (lambda fr: fr[fr.tid != fr[fr.subset == "test"].tid.iloc[0]])(orig(c)))
     with pytest.raises(ValueError, match="không thuộc tập test"):
-        ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+        ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
 
 
 def test_reevaluating_one_dataset_keeps_other_files(trained_tiny_run, ffpp_synth, vc):
@@ -191,3 +195,42 @@ def test_compsynth_unknown_kind_keyerror(trained_tiny_run, ffpp_synth, vc, monke
     monkeypatch.delitem(L0_CODE, "a0ff")
     with pytest.raises(KeyError):
         ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)
+
+
+def test_ffpp_expected_set_without_data_root(trained_tiny_run, ffpp_synth, vc, monkeypatch):
+    import dataclasses
+    import json as _j
+
+    cfg = dataclasses.replace(ffpp_synth, data_root=Path("khong_ton_tai_MINH_HOA"))
+    df = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
+    assert (df.flag == "").all() and len(df) > 0
+    info = _j.loads((trained_tiny_run / "eval_info.json").read_text(encoding="utf-8"))
+    assert info["ffpp_test"]["expected_source"] == "artifacts_only"
+    ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
+    info = _j.loads((trained_tiny_run / "eval_info.json").read_text(encoding="utf-8"))
+    assert info["ffpp_test"]["expected_source"] == "artifacts+data_root"
+
+
+def test_ffpp_video_all_keep_false_in_frames_flagged(trained_tiny_run, ffpp_synth, vc, monkeypatch):
+    import dataclasses
+
+    import compsynth_ff.select_cells as SC
+
+    cfg = dataclasses.replace(ffpp_synth, data_root=Path("khong_ton_tai_MINH_HOA"))  # chỉ dùng artifact
+    full = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
+    victim = sorted(full.video_id.unique())[0]
+    tid, src = victim.rsplit("_", 1)
+    orig = SC.load_frames
+
+    def patched(c):
+        fr = orig(c).copy()
+        fr.loc[(fr.tid == tid) & (fr.src == src), "keep"] = False  # còn trong frames nhưng không frame nào keep
+        return fr
+
+    monkeypatch.setattr(SC, "load_frames", patched)
+    import compsynth_ff.dataset as D
+    monkeypatch.setattr(D, "load_frames", patched)
+    df = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
+    row = df[df.flag == "no_usable_frame"]
+    assert len(row) == 1 and row.video_id.iloc[0] == victim and row.logit.iloc[0] == 0.0
+    assert set(df.video_id) == set(full.video_id)

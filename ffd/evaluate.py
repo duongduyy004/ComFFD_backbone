@@ -7,7 +7,8 @@ Quy ước:
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
 - Detector dựng lại từ `run_info.json["config"]` (cấu hình đầy đủ do `rundir.write_run_info` ghi; run cũ không có
   khóa này -> ValueError, không đoán).
-- ffpp_test: FFppRawCore(test), video_id = "{tid}_{src}", cell = "". Video kỳ vọng (discover_targets, subset test) không còn frame keep
+- ffpp_test: FFppRawCore(test) (tập video kỳ vọng từ frames.parquet subset test, hợp thêm discover_targets nếu data_root tồn tại;
+  không có data_root -> expected_source="artifacts_only" ghi vào run/eval_info.json), video_id = "{tid}_{src}", cell = "". Video kỳ vọng (discover_targets, subset test) không còn frame keep
   -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; video chấm được mà không thuộc tập kỳ vọng -> ValueError.
 - compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|a0ff|{region}|{borrowed or method}"
   | "{tid}|{region}|{method}"; cell = "{region}|{method}" (fake) | "a0ff" | "real"; label = L0.
@@ -27,7 +28,7 @@ import numpy as np
 import pandas as pd
 import torch
 from compsynth_ff.config import load_config
-from compsynth_ff.io_utils import read_png, write_parquet_atomic
+from compsynth_ff.io_utils import read_png, write_json_atomic, write_parquet_atomic
 
 from .config import TrainConfig, config_hash, file_hash
 from .data.transforms import eval_transform
@@ -92,9 +93,11 @@ def _frame(df: pd.DataFrame, **const) -> pd.DataFrame:
     return df
 
 
-def _ffpp_test(model, ff_cfg, bs, device) -> pd.DataFrame:
+def _ffpp_test(model, ff_cfg, bs, device):
+    """Trả (df, expected_source)."""
     from compsynth_ff.dataset import FFppRawCore
     from compsynth_ff.pairs import discover_targets
+    from compsynth_ff.select_cells import load_frames
 
     allow_read("eval", "ffpp_test")
     core = FFppRawCore(ff_cfg, "test")
@@ -102,13 +105,20 @@ def _ffpp_test(model, ff_cfg, bs, device) -> pd.DataFrame:
     lg = _score(model, len(core), lambda i: core[i]["image"], bs, device)
     df = pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
                        "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
-    # Đủ video: tập kỳ vọng từ discover_targets (subset test); video không còn frame keep -> một dòng cờ.
-    expected = {}
-    for t in discover_targets(ff_cfg):
-        if t.subset == "test":
-            expected[f"{t.tid}_real"] = 0
-            for m in t.fakes:
-                expected[f"{t.tid}_{m}"] = 1
+    # Đủ video: tập kỳ vọng dựng từ artifact tiền xử lý (frames.parquet, KHÔNG lọc keep) nên gồm cả video không còn
+    # frame keep; nếu data_root còn tồn tại thì hợp thêm discover_targets (bắt target extract hỏng hoàn toàn).
+    fr = load_frames(ff_cfg)
+    fr = fr[(fr.subset == "test") & fr.src.isin(("real",) + tuple(ff_cfg.methods))]
+    expected = {f"{t}_{s_}": (0 if s_ == "real" else 1) for t, s_ in fr[["tid", "src"]].drop_duplicates().itertuples(index=False)}
+    if Path(ff_cfg.data_root).exists():
+        source = "artifacts+data_root"
+        for t in discover_targets(ff_cfg):
+            if t.subset == "test":
+                expected[f"{t.tid}_real"] = 0
+                for m in t.fakes:
+                    expected[f"{t.tid}_{m}"] = 1
+    else:
+        source = "artifacts_only"
     extra = set(df.video_id) - set(expected)
     if extra:
         raise ValueError(f"{len(extra)} video được chấm không thuộc tập test kỳ vọng (ví dụ {sorted(extra)[0]!r})")
@@ -116,7 +126,7 @@ def _ffpp_test(model, ff_cfg, bs, device) -> pd.DataFrame:
     if miss:
         df = pd.concat([df, pd.DataFrame({"video_id": miss, "frame_idx": -1, "label": [expected[v] for v in miss],
                                           "logit": 0.0, "cell": "", "flag": "no_usable_frame"})], ignore_index=True)
-    return df
+    return df, source
 
 
 def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
@@ -192,10 +202,11 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vi
     ck = torch.load(run / "best.pt", map_location="cpu", weights_only=False)
     model.load_trainable(ck["trainable"])
     model.eval()
-    frames = []
+    frames, eval_info = [], {}
     for ds in datasets:
         if ds == "ffpp_test":
-            df = _ffpp_test(model, ff_cfg, batch_size, device)
+            df, src = _ffpp_test(model, ff_cfg, batch_size, device)
+            eval_info["ffpp_test"] = {"expected_source": src}
         elif ds == "compsynth_test":
             df = _compsynth_test(model, ff_cfg, batch_size, device)
         else:
@@ -207,4 +218,8 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vi
     df = df[COLUMNS].astype({"frame_idx": "int64", "label": "int64", "logit": "float64"})
     for ds, g in df.groupby("dataset", sort=False):  # một file mỗi dataset: chấm lại dataset nào chỉ thay file đó
         write_parquet_atomic(g.reset_index(drop=True), run / f"scores_{ds}.parquet")
+    if eval_info:  # nguồn tập video kỳ vọng (artifacts_only = máy không có data_root FF++)
+        path = run / "eval_info.json"
+        old = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        write_json_atomic({**old, **eval_info}, path)
     return run

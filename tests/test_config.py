@@ -68,3 +68,13 @@ def test_file_hash(tmp_path):
 def test_example_yaml_valid():
     p = Path(__file__).resolve().parents[1] / "config.example.yaml"
     assert load_train_config(p).mode == "raw"
+
+
+def test_config_hash_ignores_path_spelling(tmp_path):
+    a = load_train_config(write_yaml(tmp_path), overrides={"ffpp_config": Path("a/b.yaml")})
+    b = load_train_config(write_yaml(tmp_path), overrides={"ffpp_config": Path("C:/other/root/b.yaml")})
+    c = load_train_config(write_yaml(tmp_path), overrides={"ffpp_config": Path("/mnt/x/b.yaml")})
+    import dataclasses
+    d = dataclasses.replace(a, prereg=Path("p/q.yaml"))
+    e = dataclasses.replace(a, prereg=Path("/vol/prereg.yaml"))
+    assert config_hash(a) == config_hash(b) == config_hash(c) == config_hash(d) == config_hash(e)
