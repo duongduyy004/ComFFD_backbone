@@ -112,3 +112,16 @@ def test_real_vit_l_loads():
     m = ClipLoraTrunk("openai/clip-vit-large-patch14-336", 16, 16, 0.0, ("q_proj", "v_proj"), (8, 16, 24), False)
     out = m(torch.randn(1, 3, 336, 336))
     assert out["cls"].shape == (1, 1024) and out["patch"][8].shape == (1, 576, 1024)
+
+
+def test_detector_checkpointing_follows_cfg(tiny):
+    assert TrainConfig(ffpp_config="x", runs_root="r", mode="raw", seed=0, total_steps=1,
+                       eval_every=1, ckpt_every=1).grad_checkpointing is True
+    d = Detector(cfg(grad_checkpointing=True), vision_config=tiny["vision_config"])
+    assert d.trunk.base.base_model.model.encoder.gradient_checkpointing is True
+    d.train()
+    d(torch.randn(1, 3, 336, 336))["logit"].sum().backward()
+    grads = [p.grad for n, p in d.named_parameters() if "lora_" in n and p.grad is not None]
+    assert grads and any(g.abs().sum() > 0 for g in grads)
+    d2 = Detector(cfg(), vision_config=tiny["vision_config"])
+    assert d2.trunk.base.base_model.model.encoder.gradient_checkpointing is False
