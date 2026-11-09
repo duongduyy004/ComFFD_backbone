@@ -114,3 +114,18 @@ def test_video_scores_mean_logit():
     out = video_scores(df).sort_values("video_id").reset_index(drop=True)
     assert list(out.columns) == ["video_id", "label", "score"]
     assert list(out.score) == [2.0, -2.0] and list(out.label) == [1, 0]
+
+
+def test_paired_duplicate_keys_raise():
+    a = pd.DataFrame({"video_id": ["v1", "v1", "v2"]})
+    b = pd.DataFrame({"video_id": ["v1", "v2"]})
+    with pytest.raises(ValueError, match="'v1'"):
+        paired_frames(a, b)
+    with pytest.raises(ValueError, match="bảng b"):
+        paired_frames(b, pd.DataFrame({"video_id": ["v2", "v2"]}))
+
+
+def test_delong_too_few_per_class_raises():
+    y = np.array([0, 0, 0, 1])
+    with pytest.raises(ValueError):
+        delong_paired(y, np.array([.1, .2, .3, .4]), np.array([.2, .1, .3, .5]))

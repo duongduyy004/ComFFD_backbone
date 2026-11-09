@@ -71,9 +71,13 @@ def delong_paired(y, s1, s2) -> tuple[float, float, float]:
     if len(np.unique(y)) != 2:
         raise ValueError("y phải có đúng hai lớp")
     v10, v01, m, n = _components(y, [s1, s2])
+    if m < 2 or n < 2:
+        raise ValueError(f"DeLong cần >= 2 mẫu mỗi lớp (có {m} dương, {n} âm)")
     d = float(v10[0].mean() - v10[1].mean())
     S = np.cov(v10) / m + np.cov(v01) / n
     var = float(S[0, 0] + S[1, 1] - 2 * S[0, 1])
+    if not np.isfinite(var):
+        raise ValueError("phương sai DeLong không hữu hạn")
     if var <= 1e-18:
         if abs(d) <= 1e-12:
             return d, 0.0, 1.0
@@ -84,6 +88,10 @@ def delong_paired(y, s1, s2) -> tuple[float, float, float]:
 
 def paired_frames(a: pd.DataFrame, b: pd.DataFrame, key="video_id"):
     """Giao theo key, cùng thứ tự (sắp theo key) ở cả hai; n_dropped = số key chỉ ở một bên."""
+    for name, df in (("a", a), ("b", b)):
+        dup = df[key][df[key].duplicated()]
+        if len(dup):
+            raise ValueError(f"bảng {name} có {key} trùng (ví dụ {dup.iloc[0]!r}); cần bảng cấp video")
     ka, kb = set(a[key]), set(b[key])
     common = sorted(ka & kb)
     n_dropped = len(ka ^ kb)
