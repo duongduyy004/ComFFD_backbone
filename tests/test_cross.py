@@ -83,8 +83,42 @@ def test_prep_per_video_exception_does_not_crash(tmp_path, monkeypatch):
     import ffd.data.cross as cross
     root = make_synth_cdf2(tmp_path / "Celeb_DFv2")
     real = cross.read_frames
-    monkeypatch.setattr(cross, "read_frames", lambda path, idx: {k: v for k, v in real(path, idx).items() if k != idx[-1]})
+
+    def short(path, idx):
+        fr = real(path, idx)
+        return fr if "YouTube-real" in str(path) else {k: v for k, v in fr.items() if k != idx[-1]}
+
+    monkeypatch.setattr(cross, "read_frames", short)
     man = pd.read_parquet(prep_cross("cdf2", root, tmp_path / "out", ff_cfg(tmp_path), FakeDetector()))
-    assert not man.keep.any()
     de = man[man.drop_reason == "decode_error"]
-    assert de.video_id.nunique() == 7 and (de.frame_idx == -1).all() and "KeyError" in set(de.error)
+    assert de.video_id.nunique() == 5 and (de.frame_idx == -1).all() and "KeyError" in set(de.error)
+    assert man[man.keep].video_id.unique().tolist() == ["YouTube-real__00001"]
+
+
+def test_prep_all_decode_error_raises(tmp_path, monkeypatch):
+    import ffd.data.cross as cross
+    root = make_synth_cdf2(tmp_path / "Celeb_DFv2")
+    real = cross.read_frames
+    monkeypatch.setattr(cross, "read_frames", lambda path, idx: {k: v for k, v in real(path, idx).items() if k != idx[-1]})
+    with pytest.raises(RuntimeError, match="KeyError"):
+        prep_cross("cdf2", root, tmp_path / "out", ff_cfg(tmp_path), FakeDetector())
+
+
+def test_prep_exception_after_writes_cleans_crops(tmp_path, monkeypatch):
+    import ffd.data.cross as cross
+    root = make_synth_cdf2(tmp_path / "Celeb_DFv2")
+    real = cross.similarity_to_template
+    state = {"n": 0}
+
+    def flaky(kps):
+        state["n"] += 1
+        if state["n"] == 3:
+            raise ValueError("MINH HOA")
+        return real(kps)
+
+    monkeypatch.setattr(cross, "similarity_to_template", flaky)
+    man = pd.read_parquet(prep_cross("cdf2", root, tmp_path / "out", ff_cfg(tmp_path), FakeDetector()))
+    bad = man[(man.drop_reason == "decode_error") & (man.error == "ValueError")]
+    assert len(bad) == 1
+    assert not (tmp_path / "out" / "cdf2" / "crops" / bad.iloc[0].video_id).exists()
+    assert not man[man.video_id == bad.iloc[0].video_id].keep.any()

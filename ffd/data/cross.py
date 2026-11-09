@@ -11,10 +11,13 @@ bất kỳ theo video <=> một dòng frame_idx == -1, drop_reason == "decode_er
 Video có frame qua lọc có thể kèm dòng frame_idx >= 0 keep=False với lý do theo frame của choose_primary
 (no_face/second_face/small_face/yaw) hoặc "not_selected". Video có ít hơn cfg.min_keep frame giữ lại được GIỮ CÓ CHỦ Ý
 (tập test, không bỏ im lặng), khác với FF++ extract.
+Nếu MỌI video đều decode_error thì prep_cross raise RuntimeError (không ghi manifest 'thành công'). Crop dở dang của video lỗi bị xóa.
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
+import shutil
+from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
@@ -74,9 +77,12 @@ READERS = {"cdf2": read_cdf2}
 
 def _video_rows(name, item, cfg, detector, n_frames, crops_dir) -> list:
     base = dict(dataset=name, video_id=item.video_id, label=item.label, error="")
+    vdir = crops_dir / item.video_id
+    shutil.rmtree(vdir, ignore_errors=True)  # bỏ crop cũ của lần chạy trước
     try:
         return _video_rows_inner(base, item, cfg, detector, n_frames, crops_dir)
     except Exception as e:  # lỗi một video không được làm sập cả lượt chạy
+        shutil.rmtree(vdir, ignore_errors=True)  # đĩa phải khớp manifest: không để crop dở dang
         return [dict(base, frame_idx=-1, keep=False, drop_reason="decode_error", error=type(e).__name__)]
 
 
@@ -116,6 +122,10 @@ def prep_cross(name, root, out, cfg, detector, n_frames: int = 32) -> Path:
     rows = []
     for it in items:
         rows += _video_rows(name, it, cfg, detector, n_frames, d / "crops")
+    errs = [r["error"] for r in rows if r["drop_reason"] == "decode_error"]
+    if items and len(errs) == len(items):
+        raise RuntimeError(f"Mọi video ({len(items)}) đều decode_error, nghi lỗi hệ thống; "
+                           f"ngoại lệ phổ biến nhất: {Counter(errs).most_common(1)[0][0]}")
     df = pd.DataFrame(rows, columns=COLUMNS)
     df["frame_idx"] = df.frame_idx.astype("int64")
     df["label"] = df.label.astype("int64")
