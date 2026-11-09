@@ -52,3 +52,15 @@ def ffpp_synth(synth_root, tmp_path_factory):
     render_subset(cfg, "val")
     render_subset(cfg, "test")
     return cfg
+
+
+@pytest.fixture
+def tiny():
+    """Kwargs dựng ClipLoraTrunk nhỏ (random weights, không cần mạng). MINH HỌA, không phải CLIP thật."""
+    pytest.importorskip("transformers")
+    from transformers import CLIPVisionConfig
+
+    vc = CLIPVisionConfig(hidden_size=32, intermediate_size=37, num_hidden_layers=24,
+                          num_attention_heads=4, image_size=336, patch_size=14)
+    return dict(model_name="local-tiny", lora_r=4, lora_alpha=8, lora_dropout=0.0,
+                lora_targets=("q_proj", "v_proj"), grad_checkpointing=False, vision_config=vc)
