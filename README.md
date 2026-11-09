@@ -27,20 +27,22 @@ pip install -e ../preprocessing[gpu] -e .
    python -m ffd.cli train --config config.yaml --pilot --set mode=raw --set seed=0
    ```
    `--pilot` ghi vào `<runs_root>_pilot/` (thư mục anh em, không đè `runs/aug/raw/seed0` của run thật) và cho phép chưa có prereg. Kết quả pilot không bao giờ đưa vào report. Không có `--pilot` mà thiếu prereg thì `train` từ chối.
-5. **Viết `configs/prereg_aug.yaml`** (mẫu: `configs/prereg_aug.example.yaml`) rồi **không bao giờ sửa lại**. Khóa trong prereg (`rho`, `lr`, `weight_decay`, `warmup_frac`, `total_steps`, `eval_every`, `batch_size`, `selfblend`, `lora_*`) không override được bằng `--set`; hash prereg được kiểm lại lúc eval.
+5. **Viết `configs/prereg_aug.yaml`** (mẫu: `configs/prereg_aug.example.yaml`) rồi **không bao giờ sửa lại**. Khóa trong prereg (`rho`, `lr`, `weight_decay`, `warmup_frac`, `total_steps`, `eval_every`, `batch_size`, `grad_accum`, `selfblend`, `model_name`, `model_revision`, `head`, `tap_layers`, `grad_checkpointing`, `lora_*`) không override được bằng `--set`; file prereg chứa khóa khác -> lỗi. Hash prereg được kiểm lại lúc eval.
+   **Ghim `model_revision`** (commit HF của `model_name`, `smoke` in ra) trong prereg: `train` không `--pilot` từ chối khi `model_revision` rỗng. `batch_size` phải chẵn (mỗi batch đúng nửa real, nửa fake).
 6. **9 run** = 3 arm × seed 0,1,2:
    ```bash
    for arm in raw raw+comp raw+sb; do for s in 0 1 2; do
      python -m ffd.cli train --config config.yaml --set prereg=configs/prereg_aug.yaml --set mode=$arm --set seed=$s
    done; done
    ```
-   Dùng `--resume` để tiếp tục run dừng giữa chừng, `--force` để xóa kết quả cũ chạy lại.
+   Dùng `--resume` để tiếp tục run dừng giữa chừng, `--force` để xóa kết quả cũ chạy lại (xóa cả `scores_*.parquet`, `eval_info.json`).
+   `run_info.json` ghi `model_revision`, `model_commit` (commit đã resolve), `ffpp_config_hash`, `ffpp_stage_hash` (stage `render` của compsynth_ff); `eval` kiểm lại và từ chối nếu lệch.
 7. **eval** từng run (chỉ chạm test ở bước này):
    ```bash
    python -m ffd.cli eval --run runs/aug/raw/seed0 --datasets ffpp_test,compsynth_test,cdf2 --cross-root cdf2=/data/cross
    ```
    `--datasets` chỉ nhận `ffpp_test`, `compsynth_test`, `cdf2`.
-8. **report**: `python -m ffd.cli report --runs-root runs` → `main.md`, `per_cell.md`, `delong.csv`, `summary.parquet`. Seed thiếu được liệt kê dưới mục CẢNH BÁO.
+8. **report**: `python -m ffd.cli report --runs-root runs` → `main.md`, `per_cell.md`, `delong.csv`, `summary.parquet`. `main.md` có AUC video và AUC frame; CI bootstrap gom cụm theo `tid` video nguồn (ffpp_test, compsynth_test). Dưới mục CẢNH BÁO: seed/arm thiếu (arm kỳ vọng `raw`, `raw+comp`, `raw+sb` vắng hoàn toàn cũng được nêu), run không prereg, config arm lệch ngoài `mode/seed/runs_root/num_workers`, scores không khớp `best.pt` hiện tại.
 
 ## Cảnh báo
 
@@ -51,6 +53,6 @@ Quy ước nhãn Celeb-DF v2: trong `List_of_testing_videos.txt`, nhãn `1` đư
 ## Hạn chế đã biết
 
 - Mới test trên CPU với dữ liệu tổng hợp (MINH HỌA) và CLIP tí hon ngẫu nhiên; chưa chạy ViT-L thật, chưa có FF++ hay Celeb-DF trên máy.
-- Revision của model CLIP chưa được ghim (`model_name` trỏ thẳng `openai/clip-vit-large-patch14-336`).
-- Mode `compffd` không đổi σ/q theo seed train.
+- Mode `compffd` không đổi σ/q theo seed train (vẫn mở).
+- DeLong trong `delong.csv` coi các video độc lập, chưa gom cụm `tid` (chỉ CI bootstrap gom cụm).
 - Bốc method đều theo xác suất trên các method dùng được của từng frame.
