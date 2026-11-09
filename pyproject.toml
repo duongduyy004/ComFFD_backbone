@@ -16,7 +16,7 @@ dependencies = [
 test = ["pytest"]
 
 [tool.setuptools]
-packages = ["ffd"]
+packages = ["ffd", "ffd.data", "ffd.heads"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
