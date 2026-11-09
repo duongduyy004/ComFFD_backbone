@@ -140,7 +140,12 @@ def test_missing_combinations_listed_not_raised(tmp_path):
     for line in ("- raw+comp, seed 2, ffpp_test", "- raw+comp, seed 0, compsynth_test",
                  "- raw+comp, seed 1, compsynth_test", "- raw+comp, seed 2, compsynth_test"):
         assert line in head
-    assert "- raw," not in head and sum(ln.startswith("- ") for ln in head.splitlines()) == 4
+    # raw+sb vắng hoàn toàn (I9): 3 seed x 2 dataset = 6 dòng thêm, cộng dòng nêu tên arm vắng
+    for s_ in range(3):
+        for d in ("ffpp_test", "compsynth_test"):
+            assert f"- raw+sb, seed {s_}, {d}" in head
+    assert "VẮNG HOÀN TOÀN" in head and "raw+sb" in head.split("VẮNG HOÀN TOÀN", 1)[1].splitlines()[0]
+    assert "- raw," not in head and sum(ln.startswith("- ") for ln in head.splitlines()) == 4 + 6
     assert "⚠ thiếu seed [2]" in main and "– ⚠ thiếu" in main
 
 
@@ -176,3 +181,64 @@ def test_report_warns_run_without_prereg_hash(tmp_path):
     head = main.partition("## Chú thích")[0]
     assert "## CẢNH BÁO" in head and "- aug/raw/seed0" in head
     assert "aug/raw+comp/seed0" not in head
+
+
+def test_absent_arm_listed(tmp_path):
+    """I9: arm kỳ vọng không có file scores nào vẫn được liệt kê dưới CẢNH BÁO và có hàng '– ⚠ thiếu'."""
+    for m in ("raw", "raw+comp"):
+        for s in range(3):
+            put(tmp_path, fake_scores(m, s), m, s)
+    main = (build_report(tmp_path) / "main.md").read_text(encoding="utf-8")
+    head = main.split("## CẢNH BÁO", 1)[1].split("| arm", 1)[0]
+    assert "VẮNG HOÀN TOÀN" in head and all(f"- raw+sb, seed {s}, ffpp_test" in head for s in range(3))
+    assert "- raw, " not in head and "- raw+comp, " not in head
+    row = [ln for ln in main.splitlines() if ln.startswith("| raw+sb |")]
+    assert row and "– ⚠ thiếu" in row[0]
+
+
+def tid_scores(mode, seed, dataset, ntid=12):
+    """MINH HỌA: mỗi tid một video real + hai fake; video_id theo quy ước evaluate (ffpp: "{tid}_{src}",
+    compsynth: "{tid}|real" / "{tid}|{region}|{method}")."""
+    rng = np.random.default_rng(seed * 7 + len(mode))
+    rows = []
+    for t in range(ntid):
+        tid = f"{t:03d}"
+        if dataset == "ffpp_test":
+            vids = [(f"{tid}_real", 0, ""), (f"{tid}_DF", 1, ""), (f"{tid}_F2F", 1, "")]
+        else:
+            vids = [(f"{tid}|real", 0, "real"), (f"{tid}|hair|DF", 1, "hair|DF"), (f"{tid}|skin|F2F", 1, "skin|F2F")]
+        for vid, lab, cell in vids:
+            for f in range(2):
+                rows.append((f"{mode}/seed{seed}", mode, seed, "", dataset, vid, f, lab,
+                             rng.normal(lab * STRENGTH[mode], 1.0), cell, ""))
+    return pd.DataFrame(rows, columns=COLS)
+
+
+def test_frame_auc_column_and_tid_clustered_ci(tmp_path):
+    """I8: main.md có cột AUC frame cạnh AUC video; CI ffpp_test/compsynth_test resample theo cụm tid."""
+    from ffd.report import N_BOOT, _cluster
+    from ffd.stats import auc, bootstrap_ci, video_scores
+
+    assert _cluster("ffpp_test", "012_F2F") == "012" and _cluster("compsynth_test", "012|hair|DF") == "012"
+    assert _cluster("compsynth_test", "012|a0ff|hair|DF") == "012" and _cluster("cdf2", "id0_0001") == "id0_0001"
+    for m in ARMS:
+        for s in range(3):
+            put(tmp_path, pd.concat([tid_scores(m, s, "ffpp_test"), tid_scores(m, s, "compsynth_test")]), m, s)
+    out = build_report(tmp_path)
+    sm = pd.read_parquet(out / "summary.parquet")
+    assert {"auc_frame", "n_clusters"} <= set(sm.columns) and (sm.n_clusters == 12).all() and (sm.n_videos == 36).all()
+    for ds in ("ffpp_test", "compsynth_test"):
+        df = tid_scores("raw", 0, ds)
+        v = video_scores(df)
+        groups = [_cluster(ds, x) for x in v.video_id]
+        exp = bootstrap_ci(v.label, v.score, groups, n=N_BOOT, seed=0)
+        r = sm[(sm.dataset == ds) & (sm["mode"] == "raw") & (sm.seed == 0)].iloc[0]
+        assert (r.auc, r.ci_lo, r.ci_hi) == pytest.approx(exp)
+        assert r.auc_frame == pytest.approx(auc(df.label, df.logit))
+        unclustered = bootstrap_ci(v.label, v.score, v.video_id, n=N_BOOT, seed=0)
+        assert (r.ci_lo, r.ci_hi) != pytest.approx(unclustered[1:])
+    main = (out / "main.md").read_text(encoding="utf-8")
+    assert "ffpp_test (video) | ffpp_test (frame)" in main and "cụm" in main.lower()
+    raw = [ln for ln in main.splitlines() if ln.startswith("| raw |")][0]
+    g = sm[(sm["mode"] == "raw") & (sm.dataset == "compsynth_test")]
+    assert f"{g.auc_frame.mean():.4f} ± {g.auc_frame.std(ddof=1):.4f}" in raw

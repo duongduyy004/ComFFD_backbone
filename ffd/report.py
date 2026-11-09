@@ -4,11 +4,15 @@
 Quy tắc trung thực:
 - Điểm mức video tính TRƯỚC (`stats.video_scores`: trung bình logit theo video_id), mọi AUC/CI/DeLong dùng bảng video.
   Video có cờ no_usable_frame/decode_error (logit 0.0) vẫn nằm trong AUC và được đếm riêng trong chú thích.
-- CI: `bootstrap_ci` gom theo video, n=1000, alpha=0.05, seed 0 (trên bảng video).
+- AUC video tính trên đơn vị bảng video (compsynth_test: đơn vị ô "{tid}|region|method"). CI: `bootstrap_ci`
+  n=1000, alpha=0.05, seed 0, resample theo CỤM video nguồn `tid` cho ffpp_test ("{tid}_{src}") và compsynth_test
+  ("{tid}|..."), các video cùng tid (real + mọi fake/ô của nó) cùng vào hoặc cùng ra; dataset khác (cdf2) cụm = video.
+- AUC frame: trên mọi dòng frame thật (bỏ dòng cờ frame_idx=-1), báo cạnh AUC video trong main.md.
 - DeLong ghép cặp: các arm (mode != compffd) so từng cặp trong CÙNG dataset và CÙNG seed, qua
   `stats.paired_frames` trên video_id (chỉ giao các video chung; `n_dropped` = số video chỉ có ở một bên, ghi vào
   delong.csv và main.md). compffd báo riêng, không ghép với arm.
-- Đủ kết quả: mỗi arm hiện có phải có đủ seed {0,1,2} x mọi dataset đã gặp ở đâu đó; thiếu thì KHÔNG raise mà liệt kê
+- Đủ kết quả: mỗi arm kỳ vọng (EXPECTED_ARMS, kể cả arm vắng hoàn toàn) và mỗi compffd hiện có phải có đủ
+  seed {0,1,2} x mọi dataset đã gặp ở đâu đó; thiếu thì KHÔNG raise mà liệt kê
   đầu main.md (mục CẢNH BÁO) và đánh dấu ô bị ảnh hưởng. CI trong main.md luôn lấy từ seed 0 (thiếu -> "CI: thiếu seed 0").
 - Cùng (dataset, mode, split, seed) xuất hiện ở hai file scores -> ValueError; video có nhãn không nhất quán -> ValueError.
 - per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), a0ff/real báo tỉ lệ chấm "fake" (score > 0).
@@ -30,6 +34,17 @@ from .stats import auc, bootstrap_ci, delong_paired, paired_frames, video_scores
 REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag"]
 N_BOOT, ALPHA = 1000, 0.05
 REQUIRED_SEEDS = (0, 1, 2)
+EXPECTED_ARMS = ("raw", "raw+comp", "raw+sb")
+TID_CLUSTERED = ("ffpp_test", "compsynth_test")
+
+
+def _cluster(dataset: str, video_id: str) -> str:
+    """Cụm bootstrap: tid video nguồn cho ffpp_test ("{tid}_{src}") và compsynth_test ("{tid}|..."); khác -> video_id."""
+    if dataset == "compsynth_test":
+        return video_id.split("|", 1)[0]
+    if dataset == "ffpp_test":
+        return video_id.rsplit("_", 1)[0]
+    return video_id
 
 
 def _arm_label(mode: str, split: str) -> str:
@@ -44,7 +59,14 @@ def _video_table(g: pd.DataFrame, key) -> pd.DataFrame:
     meta = g.groupby("video_id").agg(cell=("cell", "first"),
                                      nuf=("flag", lambda s: (s == "no_usable_frame").any()),
                                      dec=("flag", lambda s: (s == "decode_error").any())).reset_index()
-    return v.merge(meta, on="video_id")
+    v = v.merge(meta, on="video_id")
+    v["cluster"] = [_cluster(key[0], x) for x in v.video_id]
+    return v
+
+
+def _frame_auc(g: pd.DataFrame) -> float:
+    f = g[g.flag == ""]
+    return auc(f.label, f.logit) if f.label.nunique() == 2 else float("nan")
 
 
 def _fmt(x, p=4) -> str:
@@ -55,7 +77,7 @@ def _load(runs_root: Path):
     files = sorted(p for p in runs_root.rglob("scores_*.parquet") if "report" not in p.relative_to(runs_root).parts)
     if not files:
         raise FileNotFoundError(f"Không có scores_*.parquet dưới {runs_root}")
-    seen, tables = {}, {}
+    seen, tables, fauc = {}, {}, {}
     for p in files:
         df = pd.read_parquet(p)
         miss = set(REQUIRED) - set(df.columns)
@@ -67,7 +89,8 @@ def _load(runs_root: Path):
                 raise ValueError(f"Chạy trùng {key}: có ở {seen[key]} và {p}")
             seen[key] = p
             tables[key] = _video_table(g, key)
-    return tables
+            fauc[key] = _frame_auc(g)
+    return tables, fauc
 
 
 def _runs_without_prereg(runs_root: Path) -> list:
@@ -82,17 +105,18 @@ def _runs_without_prereg(runs_root: Path) -> list:
 
 def build_report(runs_root) -> Path:
     runs_root = Path(runs_root)
-    tables = _load(runs_root)
+    tables, fauc = _load(runs_root)
     out = runs_root / "report"
 
     # ---- summary
     rows = []
     for (ds, mode, split, seed), v in sorted(tables.items()):
         try:
-            a, lo, hi = bootstrap_ci(v.label, v.score, v.video_id, n=N_BOOT, seed=0, alpha=ALPHA)
+            a, lo, hi = bootstrap_ci(v.label, v.score, v.cluster, n=N_BOOT, seed=0, alpha=ALPHA)
         except ValueError as e:
             raise ValueError(f"{(ds, mode, split, seed)}: không tính được AUC/CI ({e})") from e
         rows.append(dict(dataset=ds, mode=mode, split=split, seed=int(seed), auc=a, ci_lo=lo, ci_hi=hi,
+                         auc_frame=fauc[(ds, mode, split, seed)], n_clusters=int(v.cluster.nunique()),
                          n_videos=len(v), n_no_usable_frame=int(v.nuf.sum()), n_decode_error=int(v.dec.sum())))
     summ = pd.DataFrame(rows)
 
@@ -128,8 +152,9 @@ def build_report(runs_root) -> Path:
     arm_of = {(m, sp): _arm_label(m, sp) for m, sp in zip(summ["mode"], summ.split)}
     present = {(arm_of[(k[1], k[2])], k[0], int(k[3])) for k in tables}
     all_ds = sorted({k[0] for k in tables})
-    missing = [(a, s_, d) for a in sorted({x[0] for x in present}) for d in all_ds for s_ in REQUIRED_SEEDS
-               if (a, d, s_) not in present]
+    absent_arms = [a for a in EXPECTED_ARMS if a not in {x[0] for x in present}]
+    missing = [(a, s_, d) for a in sorted({x[0] for x in present} | set(EXPECTED_ARMS)) for d in all_ds
+               for s_ in REQUIRED_SEEDS if (a, d, s_) not in present]
 
     def cell(g, arm=None, d=None):
         miss = sorted(s_ for a, s_, dd in missing if a == arm and dd == d)
@@ -142,19 +167,33 @@ def build_report(runs_root) -> Path:
         ci = f"[{_fmt(f0.iloc[0].ci_lo)}, {_fmt(f0.iloc[0].ci_hi)}]" if len(f0) else "CI: thiếu seed 0"
         return f"{_fmt(g.auc.mean())} ± {_fmt(sd)} {ci} (n_seed={len(g)}){warn}"
 
+    def fcell(g):
+        if g is None or g.empty:
+            return "–"
+        sd = g.auc_frame.std(ddof=1) if len(g) > 1 else float("nan")
+        return f"{_fmt(g.auc_frame.mean())} ± {_fmt(sd)}"
+
     def table(arm_names):
-        lines = ["| arm | " + " | ".join(dss) + " |", "|---|" + "---|" * len(dss)]
+        head = " | ".join(f"{d} (video) | {d} (frame)" for d in dss)
+        lines = ["| arm | " + head + " |", "|---|" + "---|---|" * len(dss)]
         for a in arm_names:
-            lines.append(f"| {a} | " + " | ".join(cell(summ[(summ.arm == a) & (summ.dataset == d)], a, d) for d in dss) + " |")
+            parts = []
+            for d in dss:
+                g = summ[(summ.arm == a) & (summ.dataset == d)]
+                parts += [cell(g, a, d), fcell(g)]
+            lines.append(f"| {a} | " + " | ".join(parts) + " |")
         return lines
 
-    arm_names = sorted(summ[summ["mode"] != "compffd"].arm.unique())
+    arm_names = sorted(set(summ[summ["mode"] != "compffd"].arm.unique()) | set(EXPECTED_ARMS))
     cf_names = sorted(summ[summ["mode"] == "compffd"].arm.unique())
     md = ["# AUC video theo arm x dataset", "",
-          f"Ô = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}% theo video, seed 0, n={N_BOOT}].", ""]
+          f"Cột (video) = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}%, seed 0, n={N_BOOT}]; "
+          "cột (frame) = AUC mức frame trung bình các seed ± sd.", ""]
     noprereg = _runs_without_prereg(runs_root)
     if missing or noprereg:
         md += ["## CẢNH BÁO: thiếu kết quả (báo cáo chưa đầy đủ)", ""]
+    if absent_arms:
+        md += [f"Arm kỳ vọng VẮNG HOÀN TOÀN (không có file scores nào): {', '.join(absent_arms)}", ""]
     if missing:
         md += [f"Cần seed {list(REQUIRED_SEEDS)} x mọi dataset cho mỗi arm. Thiếu {len(missing)} tổ hợp (arm, seed, dataset):", ""]
         md += [f"- {a}, seed {s_}, {d}" for a, s_, d in missing] + [""]
@@ -164,7 +203,14 @@ def build_report(runs_root) -> Path:
     md += table(arm_names)
     if cf_names:
         md += ["", "## compffd (báo riêng, không ghép cặp với arm)", ""] + table(cf_names)
-    md += ["", "## Chú thích", ""]
+    md += ["", "## Chú thích", "",
+           "- AUC video: điểm video = trung bình logit các frame; compsynth_test tính trên đơn vị ô "
+           "(\"{tid}|region|method\", \"{tid}|real\", a0ff).",
+           f"- CI: bootstrap percentile seed 0, n={N_BOOT}, resample theo CỤM video nguồn tid cho "
+           f"{', '.join(TID_CLUSTERED)} (real và mọi fake/ô của cùng tid cùng vào/ra); dataset khác: cụm = video.",
+           "- DeLong (delong.csv): ghép cặp trên video chung, giả định các video độc lập (KHÔNG gom cụm tid), "
+           "nên p-value có thể lạc quan khi nhiều video chung một tid.",
+           "- AUC frame: mọi frame thật, bỏ dòng cờ (frame_idx=-1)."]
     for d in dss:
         sd_ = summ[summ.dataset == d]
         nv = sd_.groupby("arm").n_videos.agg(["min", "max"])
