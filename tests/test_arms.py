@@ -1,7 +1,4 @@
-"""Test Dataset theo arm, transforms, compffd. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA)."""
-import json
-from pathlib import Path
-
+"""Test Dataset theo arm, transforms. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA)."""
 import numpy as np
 import pytest
 
@@ -81,16 +78,57 @@ def test_comp_and_sb_use_same_sigma_q_sampler(monkeypatch, ffpp_synth):
     assert set(seen["raw+comp"]) == set(seen["raw+sb"])
 
 
-def test_sb_items_have_region_and_borrowed_method(ffpp_synth):
-    ds = ArmTrainDataset(ffpp_synth, "raw+sb", 1.0, 0)
-    for i in range(1, min(len(ds), 40), 2):
-        t = ds[i]["targets"]
-        assert t["source"] == "sb" and t["region"] and t["method"]
+def _spy_masks(monkeypatch):
+    got = []
+    oc, osb = arms.composite, arms.selfblend
+
+    def c(real, src, rm, dm, sigma, q):
+        got.append(("comp", rm.copy(), sigma, q))
+        return oc(real, src, rm, dm, sigma, q)
+
+    def sb(real, M, sigma, q, rng, t_params=None):
+        got.append(("sb", M.copy(), sigma, q))
+        return osb(real, M, sigma, q, rng, t_params=t_params)
+
+    monkeypatch.setattr(arms, "composite", c)
+    monkeypatch.setattr(arms, "selfblend", sb)
+    return got
+
+
+def test_comp_and_sb_same_mask(ffpp_synth, monkeypatch):
+    got = _spy_masks(monkeypatch)
+    a = ArmTrainDataset(ffpp_synth, "raw+comp", 1.0, 0)
+    b = ArmTrainDataset(ffpp_synth, "raw+sb", 1.0, 0)
+    n = 0
+    for i in range(1, min(len(a), 30), 2):
+        got.clear()
+        ta = a[i]["targets"]
+        ga = list(got)
+        got.clear()
+        tb = b[i]["targets"]
+        gb = list(got)
+        assert (ta["method"], ta["region"], ta["fallback"]) == (tb["method"], tb["region"], tb["fallback"])
+        assert ta["source"] == "comp" and tb["source"] == "sb"
+        if not ta["fallback"]:
+            n += 1
+            assert ta["region"] and len(ga) == len(gb) == 1
+            assert np.array_equal(ga[0][1], gb[0][1]) and ga[0][2:] == gb[0][2:]
+    assert n > 0
+
+
+def test_fallback_both_arms_to_raw(ffpp_synth, monkeypatch):
+    got = _spy_masks(monkeypatch)
+    for arm, src in (("raw+comp", "comp"), ("raw+sb", "sb")):
+        ds = ArmTrainDataset(ffpp_synth, arm, 1.0, 0)
+        monkeypatch.setattr(ds.core, "sample_mask", lambda *a, **k: None)
+        t = ds[1]["targets"]
+        assert t["source"] == src and t["fallback"] is True and t["region"] == "" and t["method"]
+    assert got == []
 
 
 def test_no_valid_frame_raises(ffpp_synth, monkeypatch):
     ds = ArmTrainDataset(ffpp_synth, "raw+comp", 1.0, 0)
-    monkeypatch.setattr(ds, "_frame_info", lambda t, f: ((), {}))
+    monkeypatch.setattr(ds.core, "usable", lambda t, f: [])
     with pytest.raises(RuntimeError):
         ds[1]
 
@@ -112,23 +150,6 @@ def test_flip_half():
     img[:, :100] = 255
     fl = [bool(train_transform(img, np.random.default_rng(i), already_jpeg=True)[0, 0, 0] > 0) for i in range(400)]
     assert abs(np.mean(fl) - 0.5) < 0.08
-
-
-def test_compffd_mode(ffpp_synth, tmp_path):
-    core = TrainCore(ffpp_synth)
-    sp = Path(ffpp_synth.out_root) / "splits" / "FF-T.json"
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text(json.dumps({"seen": sorted(map(list, core.allowed)), "unseen": []}), encoding="utf-8")
-    from ffd.config import TrainConfig
-
-    cfg = TrainConfig(ffpp_config=tmp_path / "ff.yaml", runs_root=tmp_path, mode="compffd", seed=0,
-                      total_steps=1, eval_every=1, ckpt_every=1, split="FF-T")
-    ds = build_train_dataset(cfg, ff_cfg=ffpp_synth)
-    assert len(ds) == 2 * len(core.real_frames)
-    it = ds[1]
-    assert it["image"].shape == (3, 336, 336) and it["targets"]["L0"] == 1
-    assert it["targets"]["source"] == "compffd" and ds[0]["targets"]["L0"] == 0
-    ds.set_epoch(1)
 
 
 def test_build_train_dataset_arm(ffpp_synth, tmp_path):
