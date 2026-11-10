@@ -98,7 +98,15 @@ def _cmd_eval(a):
     roots = parse_cross_roots(a.cross_root)
     if "cdf2" in ds and "cdf2" not in roots:
         raise SystemExit("Thiếu --cross-root cdf2=<đường dẫn> cho dataset cdf2")
-    print(evaluate_run(a.run, ds, roots))
+    ff_cfg = None
+    if a.ffpp_config:
+        from compsynth_ff.config import load_config
+
+        ff_cfg = load_config(Path(a.ffpp_config))
+    try:
+        print(evaluate_run(a.run, ds, roots, ff_cfg=ff_cfg, prereg=a.prereg))
+    except ValueError as e:
+        raise SystemExit(f"Lỗi eval: {e}") from e
 
 
 def _cmd_prep_cross(a):
@@ -133,8 +141,10 @@ def _cmd_smoke(a):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ffd.cli")
     sp = p.add_subparsers(dest="cmd", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--no-progress", action="store_true", help="tắt thanh tiến trình (stderr)")
 
-    t = sp.add_parser("train")
+    t = sp.add_parser("train", parents=[common])
     t.add_argument("--config", required=True)
     t.add_argument("--set", action="append", default=[], metavar="k=v")
     t.add_argument("--resume", action="store_true")
@@ -143,26 +153,29 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ghi vào <runs_root>_pilot, cho phép thiếu prereg; kết quả pilot không vào report")
     t.set_defaults(fn=_cmd_train)
 
-    e = sp.add_parser("eval")
+    e = sp.add_parser("eval", parents=[common])
     e.add_argument("--run", required=True)
     e.add_argument("--datasets", required=True, help=",".join(EVAL_DATASETS))
     e.add_argument("--cross-root", action="append", default=[], metavar="name=path")
+    e.add_argument("--ffpp-config", default=None,
+                   help="config FF++ trên máy eval (khác máy train); tham số phải trùng lúc train, đường dẫn được khác")
+    e.add_argument("--prereg", default=None, help="đường dẫn prereg trên máy eval; nội dung phải trùng lúc train")
     e.set_defaults(fn=_cmd_eval)
 
     from .data.cross import READERS  # nhẹ: chỉ pandas/numpy
 
-    c = sp.add_parser("prep-cross")
+    c = sp.add_parser("prep-cross", parents=[common])
     c.add_argument("--dataset", required=True, choices=sorted(READERS))
     c.add_argument("--root", required=True)
     c.add_argument("--out", required=True)
     c.add_argument("--ffpp-config", required=True)
     c.set_defaults(fn=_cmd_prep_cross)
 
-    r = sp.add_parser("report")
+    r = sp.add_parser("report", parents=[common])
     r.add_argument("--runs-root", required=True)
     r.set_defaults(fn=_cmd_report)
 
-    s = sp.add_parser("smoke")
+    s = sp.add_parser("smoke", parents=[common])
     s.add_argument("--config", required=True)
     s.add_argument("--steps", type=int, default=50)
     s.add_argument("--set", action="append", default=[], metavar="k=v")
@@ -172,6 +185,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
+    from . import progress
+
+    progress.ENABLED = not a.no_progress
     a.fn(a)
     return 0
 

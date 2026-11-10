@@ -3,6 +3,7 @@ import subprocess
 import sys
 
 import pytest
+from prereg_util import write_prereg
 
 
 def run_cli(args):
@@ -26,7 +27,7 @@ def test_cli_bad_cross_root():
 def test_cli_set_locked_key_rejected(tmp_path):
     cfg = tmp_path / "c.yaml"
     pre = tmp_path / "p.yaml"
-    pre.write_text("lr: 1.0e-4\ntotal_steps: 10\neval_every: 5\n", encoding="utf-8")
+    write_prereg(pre)
     cfg.write_text(f"ffpp_config: x.yaml\nruns_root: {tmp_path.as_posix()}/runs\nmode: raw\nseed: 0\n"
                    f"total_steps: 1\neval_every: 1\nckpt_every: 1\nprereg: {pre.as_posix()}\n", encoding="utf-8")
     r = run_cli(["train", "--config", str(cfg), "--set", "lr=0.1"])
@@ -66,7 +67,7 @@ def test_train_without_prereg_refused(tmp_path):
 
 def test_train_set_prereg_null_refused(tmp_path):
     pre = tmp_path / "p.yaml"
-    pre.write_text("lr: 1.0e-4\n", encoding="utf-8")
+    write_prereg(pre)  # đủ khóa, model_revision: null
     r = run_cli(["train", "--config", str(_cfg(tmp_path, pre.as_posix())), "--set", "prereg=null"])
     assert r.returncode != 0 and "prereg" in r.stderr
 
@@ -106,6 +107,6 @@ def test_smoke_steps_lt_2():
 def test_train_without_model_revision_refused(tmp_path):
     """I2: run thật (không --pilot) có prereg nhưng model_revision None -> từ chối, nhắc ghim trong prereg."""
     pre = tmp_path / "p.yaml"
-    pre.write_text("lr: 1.0e-4\n", encoding="utf-8")
+    write_prereg(pre)  # đủ khóa, model_revision: null
     r = run_cli(["train", "--config", str(_cfg(tmp_path, pre.as_posix()))])
     assert r.returncode != 0 and "model_revision" in r.stderr and "Traceback" not in r.stderr

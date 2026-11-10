@@ -64,14 +64,29 @@ def _gpu():
         return None
 
 
-def ffpp_hashes(cfg: TrainConfig, ff_cfg) -> dict:
-    """Định danh artifact tiền xử lý: hash file config FF++ (None nếu file không tồn tại) và
-    compsynth_ff.config.stage_hash(ff_cfg, "render") (None nếu không có ff_cfg)."""
-    from compsynth_ff.config import stage_hash
+FFPP_PATH_FIELDS = ("data_root", "out_root", "splits_dir")  # khác nhau giữa máy/ổ đĩa: không băm
 
-    p = cfg.ffpp_config
-    return {"ffpp_config_hash": file_hash(p) if p is not None and Path(p).is_file() else None,
-            "ffpp_stage_hash": stage_hash(ff_cfg, FFPP_STAGE) if ff_cfg is not None else None}
+
+def ffpp_config_hash(ff_cfg) -> str:
+    """R1: hash các trường ĐÃ PARSE của Config FF++, bỏ trường đường dẫn. Đổi máy/ổ đĩa/thư mục không đổi hash;
+    đổi bất kỳ tham số nào (kể cả trường mới thêm sau này) thì đổi hash."""
+    import hashlib
+
+    d = {k: v for k, v in dataclasses.asdict(ff_cfg).items() if k not in FFPP_PATH_FIELDS}
+    s = json.dumps(d, sort_keys=True, default=str)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
+
+
+def ffpp_hashes(cfg: TrainConfig, ff_cfg) -> dict:
+    """Định danh artifact tiền xử lý: `ffpp_config_hash(ff_cfg)` và stage_hash(ff_cfg, "render").
+    ff_cfg None -> nạp từ cfg.ffpp_config nếu file tồn tại; không có thì cả hai là None."""
+    from compsynth_ff.config import load_config, stage_hash
+
+    if ff_cfg is None and cfg.ffpp_config is not None and Path(cfg.ffpp_config).is_file():
+        ff_cfg = load_config(Path(cfg.ffpp_config))
+    if ff_cfg is None:
+        return {"ffpp_config_hash": None, "ffpp_stage_hash": None}
+    return {"ffpp_config_hash": ffpp_config_hash(ff_cfg), "ffpp_stage_hash": stage_hash(ff_cfg, FFPP_STAGE)}
 
 
 def write_run_info(dir, cfg: TrainConfig, extra: dict, ff_cfg=None) -> None:

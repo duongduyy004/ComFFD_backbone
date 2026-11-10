@@ -34,6 +34,7 @@ import torch
 from compsynth_ff.config import load_config
 from compsynth_ff.io_utils import write_json_atomic
 
+from . import progress
 from .config import TrainConfig, split_path
 from .data.arms import build_train_dataset
 from .data.transforms import eval_transform
@@ -94,7 +95,7 @@ def val_scores(model, cfg: TrainConfig, ff_cfg, batch_size: int | None = None, d
     model.eval()
     logits = []
     try:
-        for s in range(0, len(rows), bs):
+        for s in progress.bar(range(0, len(rows), bs), desc=f"val {subset}", unit="batch", leave=False):
             chunk = rows[s:s + bs]
             x = torch.stack([eval_transform(core[r[0]]["image"]) for r in chunk]).to(device)
             with _autocast(device):
@@ -271,9 +272,14 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     def fail(s: int, vids: list, loss):
         err = {"step": s, "loss": float(loss), "video_ids": sorted(set(vids))}
         write_json_atomic(err, d / "error.json")
+        pb.close()
         raise FloatingPointError(f"Loss không hữu hạn ở step {s}: {float(loss)}; video_id={err['video_ids']}")
 
     acc_loss, acc_n, acc_vids = 0.0, 0, []  # ngoài vòng epoch: một step luôn đủ `accum` micro-batch
+    run_name = f"compffd/{cfg.split}" if cfg.mode == "compffd" else cfg.mode
+    pb = progress.bar(total=cfg.total_steps, initial=step, desc=f"train {run_name} seed{cfg.seed}", unit="step")
+    if best is not None:
+        pb.set_postfix(best_auc=f"{best['auc_video']:.4f}")
     while step < cfg.total_steps:
         epoch, off = divmod(micro, per_epoch)
         ds.set_epoch(epoch)
@@ -300,7 +306,10 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             sched.step()
             opt.zero_grad(set_to_none=True)
             step += 1
+            pb.update(1)
             if step % log_every == 0 or step == cfg.total_steps:
+                pb.set_postfix(loss=f"{acc_loss / acc_n:.4f}",
+                               best_auc="-" if best is None else f"{best['auc_video']:.4f}")
                 _append_jsonl(d / "train_log.jsonl", {"step": step, "loss": acc_loss / acc_n,
                                                       "lr": sched.get_last_lr()[0], "grad_norm": gn})
             acc_loss, acc_n, acc_vids = 0.0, 0, []
@@ -313,5 +322,6 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
                                           "step": step, "best": best, "best_state": best_state})
             if last:
                 break
+    pb.close()
     (d / "done.flag").write_text(f"step={step}\n", encoding="utf-8")
     return d

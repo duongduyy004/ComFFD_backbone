@@ -5,7 +5,7 @@ Quy ước:
 - `datasets` ⊆ {ffpp_test, compsynth_test, cdf2}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
 - Chỉ nạp `best.pt` (qua `Detector.load_trainable`); cần `done.flag`; nếu run có prereg thì hash trong
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
-- Artifact tiền xử lý phải trùng lúc train: `ffpp_config_hash` (file config FF++) và `ffpp_stage_hash`
+- Artifact tiền xử lý phải trùng lúc train: `ffpp_config_hash` (Config FF++ đã parse, bỏ đường dẫn) và `ffpp_stage_hash`
   (stage_hash(ff_cfg, "render")) tính lại từ ff_cfg dùng khi eval; lệch -> ValueError. Commit HF của trunk dựng lại
   phải bằng `model_commit` trong run_info.
 - Detector dựng lại từ `run_info.json["config"]` (cấu hình đầy đủ do `rundir.write_run_info` ghi; run cũ không có
@@ -33,6 +33,7 @@ import torch
 from compsynth_ff.config import load_config
 from compsynth_ff.io_utils import read_png, write_json_atomic, write_parquet_atomic
 
+from . import progress
 from .config import TrainConfig, config_hash, file_hash
 from .data.transforms import eval_transform
 from .guards import allow_read
@@ -58,9 +59,10 @@ def _cfg_from_info(info: dict) -> TrainConfig:
     return TrainConfig(**d)
 
 
-def _check_run(run: Path, ff_cfg=None) -> tuple[TrainConfig, dict, object]:
+def _check_run(run: Path, ff_cfg=None, prereg=None) -> tuple[TrainConfig, dict, object]:
     """Kiểm run (done, best.pt, prereg, config_hash, artifact tiền xử lý); trả (cfg, info, ff_cfg).
-    ff_cfg None -> nạp từ cfg.ffpp_config (sau các kiểm tra rẻ)."""
+    ff_cfg None -> nạp từ cfg.ffpp_config (sau các kiểm tra rẻ). `prereg` (đường dẫn) thay cho cfg.prereg khi
+    eval trên máy khác máy train; nội dung vẫn phải trùng prereg_hash."""
     if not (run / "done.flag").exists():
         raise ValueError(f"Run chưa xong (thiếu done.flag): {run}")
     if not (run / "best.pt").exists():
@@ -71,9 +73,10 @@ def _check_run(run: Path, ff_cfg=None) -> tuple[TrainConfig, dict, object]:
     info = json.loads(info_p.read_text(encoding="utf-8"))
     cfg = _cfg_from_info(info)
     if info.get("prereg_hash"):
-        if cfg.prereg is None or not Path(cfg.prereg).exists():
-            raise ValueError(f"Run có prereg_hash nhưng không thấy file prereg {cfg.prereg}")
-        now = file_hash(cfg.prereg)
+        pre = Path(prereg) if prereg is not None else cfg.prereg
+        if pre is None or not Path(pre).exists():
+            raise ValueError(f"Run có prereg_hash nhưng không thấy file prereg {pre} (khác máy: dùng --prereg)")
+        now = file_hash(pre)
         if now != info["prereg_hash"]:
             raise ValueError(f"Hash prereg khác lúc train ({info['prereg_hash']} != {now}); không chấm điểm")
     if config_hash(cfg) != info.get("config_hash"):
@@ -81,7 +84,10 @@ def _check_run(run: Path, ff_cfg=None) -> tuple[TrainConfig, dict, object]:
     for k in ("ffpp_config_hash", "ffpp_stage_hash"):
         if k not in info:
             raise ValueError(f"run_info.json thiếu {k} (run cũ); không xác định được artifact tiền xử lý")
-    ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
+    if ff_cfg is None:
+        if cfg.ffpp_config is None or not Path(cfg.ffpp_config).is_file():
+            raise ValueError(f"Không thấy file config FF++ {cfg.ffpp_config} (khác máy: dùng --ffpp-config)")
+        ff_cfg = load_config(cfg.ffpp_config)
     now = ffpp_hashes(cfg, ff_cfg)
     for k, v in now.items():
         if v != info[k]:
@@ -90,9 +96,9 @@ def _check_run(run: Path, ff_cfg=None) -> tuple[TrainConfig, dict, object]:
 
 
 @torch.no_grad()
-def _score(model, n: int, get_img, bs: int, device) -> np.ndarray:
+def _score(model, n: int, get_img, bs: int, device, desc: str = "eval") -> np.ndarray:
     out = []
-    for s in range(0, n, bs):
+    for s in progress.bar(range(0, n, bs), desc=desc, unit="batch"):
         x = torch.stack([eval_transform(get_img(i)) for i in range(s, min(n, s + bs))]).to(device)
         with _autocast(device):
             out.append(model(x)["logit"].float().cpu())
@@ -117,7 +123,7 @@ def _ffpp_test(model, ff_cfg, bs, device):
     allow_read("eval", "ffpp_test")
     core = FFppRawCore(ff_cfg, "test")
     tg = [core[i]["targets"] for i in range(len(core))]  # đọc ảnh hai lần: chấp nhận cho đơn giản
-    lg = _score(model, len(core), lambda i: core[i]["image"], bs, device)
+    lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval ffpp_test")
     df = pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
                        "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
     # Đủ video: tập kỳ vọng dựng từ artifact tiền xử lý (frames.parquet, KHÔNG lọc keep) nên gồm cả video không còn
@@ -162,7 +168,7 @@ def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
             v, c = f"{tid}|{r}|{me}", f"{r}|{me}"
         lab = L0_CODE[k]  # KeyError nếu kind lạ
         vids.append(v); cells.append(c); labels.append(lab); fidx.append(m["frame_idx"])  # noqa: E702
-    lg = _score(model, len(core), lambda i: core[i]["image"], bs, device)
+    lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval compsynth_test")
     return pd.DataFrame({"video_id": vids, "frame_idx": fidx, "label": labels, "logit": lg,
                          "cell": cells, "flag": ""})
 
@@ -176,7 +182,7 @@ def _cross(model, name, root, bs, device) -> pd.DataFrame:
         raise ValueError(f"manifest {base} chứa dataset khác {name!r}")
     keep = man[man.keep].sort_values(["video_id", "frame_idx"]).reset_index(drop=True)
     paths = [base / "crops" / r.video_id / f"{int(r.frame_idx):05d}.png" for r in keep.itertuples()]
-    lg = _score(model, len(keep), lambda i: read_png(paths[i], cv2.IMREAD_COLOR), bs, device)
+    lg = _score(model, len(keep), lambda i: read_png(paths[i], cv2.IMREAD_COLOR), bs, device, f"eval {name}")
     parts = [pd.DataFrame({"video_id": keep.video_id, "frame_idx": keep.frame_idx.astype("int64"),
                            "label": keep.label.astype("int64"), "logit": lg, "cell": "", "flag": ""})]
     has_keep = set(keep.video_id)
@@ -195,7 +201,7 @@ def _cross(model, name, root, bs, device) -> pd.DataFrame:
     return out
 
 
-def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vision_config=None,
+def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, prereg=None, vision_config=None,
                  device=None, batch_size: int = 16) -> Path:
     """Chấm điểm best.pt của `run` trên `datasets`, ghi `run/scores_{dataset}.parquet` mỗi dataset; trả thư mục run."""
     run = Path(run)
@@ -206,7 +212,7 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, vi
         raise ValueError("datasets rỗng")
     if "cdf2" in datasets and "cdf2" not in cross_roots:
         raise ValueError("Thiếu cross_roots['cdf2']")
-    cfg, info, ff_cfg = _check_run(run, ff_cfg)
+    cfg, info, ff_cfg = _check_run(run, ff_cfg, prereg)
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     # Seed như train() trước khi dựng model: với `vision_config` ngẫu nhiên (test) phần đóng băng không nằm trong
     # best.pt nên phải tái tạo y hệt; với CLIP thật (from_pretrained) không ảnh hưởng.

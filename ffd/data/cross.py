@@ -26,6 +26,8 @@ from compsynth_ff.align import choose_primary, estimate_yaw_deg, similarity_to_t
 from compsynth_ff.io_utils import write_parquet_atomic, write_png
 from compsynth_ff.video import count_frames, keep_evenly, read_frames, select_candidates
 
+from .. import progress
+
 LIST_NAME = "List_of_testing_videos.txt"
 _FOLDER_LABEL = {"Celeb-synthesis": 1, "Celeb-real": 0, "YouTube-real": 0}
 COLUMNS = ["dataset", "video_id", "frame_idx", "label", "keep", "drop_reason", "error"]
@@ -123,7 +125,7 @@ def prep_cross(name, root, out, cfg, detector, n_frames: int = 32) -> Path:
     items = READERS[name](root)
     d = Path(out) / name
     rows = []
-    for it in items:
+    for it in progress.bar(items, desc=f"prep-cross {name}", unit="video"):
         rows += _video_rows(name, it, cfg, detector, n_frames, d / "crops")
     errs = [r["error"] for r in rows if r["drop_reason"] == "decode_error"]
     if items and len(errs) == len(items):

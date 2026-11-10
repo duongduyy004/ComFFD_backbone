@@ -6,6 +6,7 @@ import yaml
 from compsynth_ff.composite import DEFAULT_T
 
 from ffd.config import config_hash, file_hash, load_train_config
+from prereg_util import full_prereg
 
 BASE = dict(ffpp_config="ffpp.yaml", runs_root="runs", mode="raw", seed=0,
             total_steps=100, eval_every=10, ckpt_every=50)
@@ -15,8 +16,10 @@ def write_yaml(path, **kw):
     path = Path(path)
     if path.suffix != ".yaml":
         path = path / "cfg.yaml"
-    d = {**BASE, **kw} if path.name != "pre.yaml" else kw
-    d = {k: (str(v) if isinstance(v, Path) else v) for k, v in d.items() if v is not None}
+    if path.name == "pre.yaml":  # R3: prereg luôn đủ khóa; giữ cả giá trị None (vd model_revision)
+        d = {k: (str(v) if isinstance(v, Path) else v) for k, v in full_prereg(**kw).items()}
+    else:
+        d = {k: (str(v) if isinstance(v, Path) else v) for k, v in {**BASE, **kw}.items() if v is not None}
     path.write_text(yaml.safe_dump(d), encoding="utf-8")
     return path
 
@@ -110,3 +113,25 @@ def test_prereg_locks_all_result_keys_and_rejects_unknown(tmp_path):
         pre2 = write_yaml(tmp_path / "pre.yaml", lr=2e-4, **bad)
         with pytest.raises(ValueError, match=sorted(bad)[0]):
             load_train_config(write_yaml(tmp_path, prereg=pre2))
+
+
+def test_prereg_missing_key_rejected(tmp_path):
+    """R3: prereg thiếu bất kỳ khóa PREREG_KEYS/lora_* nào -> ValueError nêu tên khóa thiếu."""
+    from ffd.config import PREREG_REQUIRED
+
+    for k in ("total_steps", "lora_r", "model_revision", "selfblend"):
+        d = full_prereg()
+        del d[k]
+        pre = tmp_path / "p.yaml"
+        pre.write_text(yaml.safe_dump(d), encoding="utf-8")
+        with pytest.raises(ValueError, match=k):
+            load_train_config(write_yaml(tmp_path, prereg=pre))
+    assert set(PREREG_REQUIRED) == set(full_prereg())  # file mẫu ghi đúng và đủ khóa bắt buộc
+
+
+def test_prereg_example_loads(tmp_path):
+    """File mẫu configs/prereg_aug.example.yaml nạp được nguyên trạng."""
+    from prereg_util import PREREG_EXAMPLE
+
+    c = load_train_config(write_yaml(tmp_path, prereg=PREREG_EXAMPLE))
+    assert c.lora_targets == ("q_proj", "v_proj") and c.model_revision is None

@@ -280,3 +280,23 @@ def test_scores_best_step_mismatch_warned(tree):
     assert "- aug/raw/seed1/scores_ffpp_test.parquet: best_step trong scores = [10], best.pt = 99" in head
     assert "- aug/raw+sb/seed2/scores_ffpp_test.parquet: best_step trong scores = [10], best.pt = thiếu" in head
     assert "aug/raw/seed0" not in head
+
+
+def test_delong_csv_is_clustered_by_tid(tmp_path):
+    """R2: delong.csv dùng DeLong gom cụm theo tid (ffpp_test "{tid}_{src}"); khớp stats.delong_paired_clustered."""
+    from ffd.stats import delong_paired_clustered, video_scores
+
+    srcs = ("real", "DF", "F2F", "FS")
+    for m in ARMS:
+        for s in range(3):
+            df = fake_scores(m, s, nvid=24)
+            df["video_id"] = [f"t{int(v[1:]) // 4:02d}_{srcs[int(v[1:]) % 4]}" for v in df.video_id]
+            df["label"] = [0 if v.endswith("_real") else 1 for v in df.video_id]
+            put(tmp_path, df, m, s)
+    d = pd.read_csv(build_report(tmp_path) / "delong.csv")
+    assert (d.n_clusters == 12).all() and (d.n_videos == 48).all()
+    r = d[(d.seed == 0) & (d.arm_a == "raw") & (d.arm_b == "raw+comp")].iloc[0]
+    va = video_scores(pd.read_parquet(tmp_path / "aug/raw/seed0/scores_ffpp_test.parquet"))
+    vb = video_scores(pd.read_parquet(tmp_path / "aug/raw+comp/seed0/scores_ffpp_test.parquet"))
+    dd, z, p = delong_paired_clustered(va.label, va.score, vb.score, va.video_id.str.rsplit("_", n=1).str[0])
+    assert r["diff"] == pytest.approx(dd) and r.z == pytest.approx(z) and r.p == pytest.approx(p)

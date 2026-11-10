@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 import torch
 
+from . import progress
 from .config import TrainConfig
 from .data.arms import ArmTrainDataset
 from .data.transforms import CLIP_MEAN, CLIP_STD
@@ -74,6 +75,7 @@ def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
     model.train()
     torch.cuda.reset_peak_memory_stats()
     done, t0 = 0, None
+    pb = progress.bar(total=steps, desc="smoke", unit="step")
     while done < steps:
         for batch in loader:
             x = batch["image"].to(device)
@@ -84,12 +86,15 @@ def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
             opt.step()
             opt.zero_grad(set_to_none=True)
             done += 1
+            pb.update(1)
+            pb.set_postfix(loss=f"{float(loss.detach()):.4f}")
             if done == 1:  # bỏ step đầu (khởi tạo cuDNN/cache) khỏi thời gian
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
             if done == steps:
                 break
     torch.cuda.synchronize()
+    pb.close()
     dt = time.perf_counter() - t0
     res = {"peak_vram_gb": torch.cuda.max_memory_allocated() / 2**30,
            "sec_per_step": dt / max(steps - 1, 1) if steps > 1 else dt,

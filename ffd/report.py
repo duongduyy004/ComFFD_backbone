@@ -8,7 +8,8 @@ Quy tắc trung thực:
   n=1000, alpha=0.05, seed 0, resample theo CỤM video nguồn `tid` cho ffpp_test ("{tid}_{src}") và compsynth_test
   ("{tid}|..."), các video cùng tid (real + mọi fake/ô của nó) cùng vào hoặc cùng ra; dataset khác (cdf2) cụm = video.
 - AUC frame: trên mọi dòng frame thật (bỏ dòng cờ frame_idx=-1), báo cạnh AUC video trong main.md.
-- DeLong ghép cặp: các arm (mode != compffd) so từng cặp trong CÙNG dataset và CÙNG seed, qua
+- DeLong ghép cặp, gom cụm theo cùng cụm với CI (`stats.delong_paired_clustered`, Obuchowski 1997): các arm
+  (mode != compffd) so từng cặp trong CÙNG dataset và CÙNG seed, qua
   `stats.paired_frames` trên video_id (chỉ giao các video chung; `n_dropped` = số video chỉ có ở một bên, ghi vào
   delong.csv và main.md). compffd báo riêng, không ghép với arm.
 - Đủ kết quả: mỗi arm kỳ vọng (EXPECTED_ARMS, kể cả arm vắng hoàn toàn) và mỗi compffd hiện có phải có đủ
@@ -32,7 +33,7 @@ import numpy as np
 import pandas as pd
 from compsynth_ff.io_utils import atomic_write_bytes, write_parquet_atomic
 
-from .stats import auc, bootstrap_ci, delong_paired, paired_frames, video_scores
+from .stats import auc, bootstrap_ci, delong_paired_clustered, paired_frames, video_scores
 
 REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
             "best_step"]
@@ -174,16 +175,17 @@ def build_report(runs_root) -> Path:
         for ma, mb in combinations(modes, 2):
             ka = next(k for k in arms if k[0] == ds and k[3] == seed and k[1] == ma)
             kb = next(k for k in arms if k[0] == ds and k[3] == seed and k[1] == mb)
-            sa, sb, nd = paired_frames(tables[ka][["video_id", "label", "score"]],
-                                       tables[kb][["video_id", "label", "score"]])
+            cols = ["video_id", "label", "score", "cluster"]
+            sa, sb, nd = paired_frames(tables[ka][cols], tables[kb][cols])
             if not (sa.label.to_numpy() == sb.label.to_numpy()).all():
                 raise ValueError(f"{ds} seed {seed}: {ma} và {mb} gán nhãn khác nhau cho cùng video")
-            d, z, p = delong_paired(sa.label, sa.score, sb.score)
+            d, z, p = delong_paired_clustered(sa.label, sa.score, sb.score, sa.cluster)
             dl.append(dict(dataset=ds, seed=int(seed), arm_a=ma, arm_b=mb,
                            auc_a=auc(sa.label, sa.score), auc_b=auc(sb.label, sb.score),
-                           diff=d, z=z, p=p, n_videos=len(sa), n_dropped=int(nd)))
+                           diff=d, z=z, p=p, n_videos=len(sa), n_clusters=int(sa.cluster.nunique()),
+                           n_dropped=int(nd)))
     delong = pd.DataFrame(dl, columns=["dataset", "seed", "arm_a", "arm_b", "auc_a", "auc_b", "diff", "z", "p",
-                                       "n_videos", "n_dropped"])
+                                       "n_videos", "n_clusters", "n_dropped"])
 
     # ---- main.md
     summ["arm"] = [_arm_label(m, s) for m, s in zip(summ["mode"], summ.split)]
@@ -255,8 +257,8 @@ def build_report(runs_root) -> Path:
            "(\"{tid}|region|method\", \"{tid}|real\", a0ff).",
            f"- CI: bootstrap percentile seed 0, n={N_BOOT}, resample theo CỤM video nguồn tid cho "
            f"{', '.join(TID_CLUSTERED)} (real và mọi fake/ô của cùng tid cùng vào/ra); dataset khác: cụm = video.",
-           "- DeLong (delong.csv): ghép cặp trên video chung, giả định các video độc lập (KHÔNG gom cụm tid), "
-           "nên p-value có thể lạc quan khi nhiều video chung một tid.",
+           "- DeLong (delong.csv): ghép cặp trên video chung, GOM CỤM theo cùng cụm với CI (tid cho "
+           f"{', '.join(TID_CLUSTERED)}; dataset khác: cụm = video), phương sai theo Obuchowski (1997).",
            "- AUC frame: mọi frame thật, bỏ dòng cờ (frame_idx=-1)."]
     for d in dss:
         sd_ = summ[summ.dataset == d]

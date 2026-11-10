@@ -239,12 +239,16 @@ def test_ffpp_video_all_keep_false_in_frames_flagged(trained_tiny_run, ffpp_synt
 
 def test_run_info_records_model_and_ffpp_provenance(trained_tiny_run, ffpp_synth):
     """I2/I3: run_info ghi model_revision (None khi chưa ghim), model_commit ("local" với vision_config),
-    ffpp_config_hash (None: file 'unused.yaml' không tồn tại) và ffpp_stage_hash = stage_hash(ff_cfg, 'render')."""
+    ffpp_config_hash = ffpp_config_hash(ff_cfg) (R1: Config đã parse, bỏ đường dẫn) và
+    ffpp_stage_hash = stage_hash(ff_cfg, 'render')."""
     from compsynth_ff.config import stage_hash
+
+    from ffd.rundir import ffpp_config_hash
 
     info = json.loads((trained_tiny_run / "run_info.json").read_text(encoding="utf-8"))
     assert info["model_revision"] is None and info["model_commit"] == "local"
-    assert info["ffpp_config_hash"] is None and info["ffpp_stage_hash"] == stage_hash(ffpp_synth, "render")
+    assert info["ffpp_config_hash"] == ffpp_config_hash(ffpp_synth)
+    assert info["ffpp_stage_hash"] == stage_hash(ffpp_synth, "render")
 
 
 def test_eval_refuses_changed_ffpp_artifacts(trained_tiny_run, ffpp_synth, vc, tmp_path):
@@ -254,7 +258,7 @@ def test_eval_refuses_changed_ffpp_artifacts(trained_tiny_run, ffpp_synth, vc, t
     run = tmp_path / "r"
     shutil.copytree(trained_tiny_run, run)
     other = dataclasses.replace(ffpp_synth, jpeg_q=(ffpp_synth.jpeg_q[0], ffpp_synth.jpeg_q[1] - 1))
-    with pytest.raises(ValueError, match="ffpp_stage_hash"):
+    with pytest.raises(ValueError, match="ffpp_config_hash|ffpp_stage_hash"):  # R1: config hash phủ cả stage
         evaluate_run(run, ["ffpp_test"], {}, ff_cfg=other, vision_config=vc, device="cpu")
     info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
     info["ffpp_config_hash"] = "deadbeef0000"
@@ -278,3 +282,27 @@ def test_scores_carry_best_step(trained_tiny_run, ffpp_synth, vc):
     df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
     step = int(torch.load(trained_tiny_run / "best.pt", weights_only=False)["step"])
     assert set(df.best_step) == {step} and df.best_step.dtype == "int64"
+
+
+def test_eval_accepts_moved_paths(trained_tiny_run, ffpp_synth, vc, tmp_path):
+    """R1: eval trên "máy khác": data_root/splits_dir khác lúc train, file config FF++ và prereg ở chỗ mới
+    -> vẫn chấm được (hash chỉ phụ thuộc tham số và nội dung prereg)."""
+    import dataclasses
+
+    run = tmp_path / "r"
+    shutil.copytree(trained_tiny_run, run)
+    pre_old, pre_new = tmp_path / "old" / "prereg.yaml", tmp_path / "new" / "prereg.yaml"
+    pre_new.parent.mkdir()
+    pre_new.write_text("rho: 0.5\n", encoding="utf-8")
+    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
+    info["prereg_hash"] = file_hash(pre_new)
+    info["config"]["prereg"] = str(pre_old)  # đường dẫn của máy train, không tồn tại ở đây
+    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
+    moved = dataclasses.replace(ffpp_synth, data_root=tmp_path / "khong_co", splits_dir=tmp_path / "sp_khac")
+    with pytest.raises(ValueError, match="--prereg"):
+        evaluate_run(run, ["ffpp_test"], {}, ff_cfg=moved, vision_config=vc, device="cpu")
+    evaluate_run(run, ["ffpp_test"], {}, ff_cfg=moved, prereg=pre_new, vision_config=vc, device="cpu")
+    assert (run / "scores_ffpp_test.parquet").exists()
+    pre_new.write_text("rho: 0.6\n", encoding="utf-8")  # nội dung đổi -> vẫn từ chối
+    with pytest.raises(ValueError, match="prereg"):
+        evaluate_run(run, ["ffpp_test"], {}, ff_cfg=moved, prereg=pre_new, vision_config=vc, device="cpu")

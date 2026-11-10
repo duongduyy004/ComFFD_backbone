@@ -324,3 +324,19 @@ def test_odd_batch_size_rejected_by_config(tmp_path):
                  "ckpt_every: 1\nbatch_size: 7\n", encoding="utf-8")
     with pytest.raises(ValueError, match="chẵn"):
         load_train_config(y)
+
+
+def test_train_progress_bar_does_not_change_results(ffpp_synth, tiny, tmp_path, capsys, monkeypatch):
+    """Thanh tiến trình ghi stderr (step/total, loss); tắt hay bật thì loss, val và best.pt y hệt nhau."""
+    from ffd import progress
+
+    a = run(mkcfg(runs_root=tmp_path / "on"), ffpp_synth, tiny)
+    err = capsys.readouterr().err
+    assert "train raw seed0" in err and "12/12" in err and "loss=" in err
+    monkeypatch.setattr(progress, "ENABLED", False)
+    b = run(mkcfg(runs_root=tmp_path / "off"), ffpp_synth, tiny)
+    assert capsys.readouterr().err == ""
+    assert read_jsonl(a / "train_log.jsonl") == read_jsonl(b / "train_log.jsonl")
+    assert read_jsonl(a / "val_curve.jsonl") == read_jsonl(b / "val_curve.jsonl")
+    ba, bb = torch.load(a / "best.pt", weights_only=False), torch.load(b / "best.pt", weights_only=False)
+    assert ba["step"] == bb["step"] and all(torch.equal(ba["trainable"][k], bb["trainable"][k]) for k in ba["trainable"])

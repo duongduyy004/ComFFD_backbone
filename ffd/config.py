@@ -19,6 +19,9 @@ MODES = ("raw", "raw+comp", "raw+sb", "compffd")
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
                "batch_size", "grad_accum", "selfblend", "model_name", "model_revision", "head", "tap_layers",
                "grad_checkpointing")
+LORA_KEYS = ("lora_r", "lora_alpha", "lora_dropout", "lora_targets")
+# R3: file prereg phải ghi ĐỦ các khóa này (thiếu -> ValueError), để không khóa nào lấy ngầm từ config.yaml.
+PREREG_REQUIRED = PREREG_KEYS + LORA_KEYS
 _PATH_FIELDS = ("ffpp_config", "runs_root", "prereg")
 # Không băm đường dẫn (khác nhau giữa máy/OS); nội dung prereg đã có prereg_hash trong run_info.
 _HASH_SKIP = ("runs_root", "num_workers", "ffpp_config", "prereg")
@@ -75,6 +78,9 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
         bad = sorted(k for k in pre if not _is_locked(k))
         if bad:
             raise ValueError(f"File prereg {prereg} chứa khóa không thuộc PREREG_KEYS/lora_*: {bad}")
+        missing = [k for k in PREREG_REQUIRED if k not in pre]
+        if missing:
+            raise ValueError(f"File prereg {prereg} thiếu khóa {missing}; prereg phải ghi đủ {list(PREREG_REQUIRED)}")
         d.update(pre)
         d["prereg"] = prereg
     d.update(overrides)

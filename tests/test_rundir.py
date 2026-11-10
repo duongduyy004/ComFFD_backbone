@@ -81,17 +81,42 @@ def test_stale_artifacts_without_resume_or_force_refused(tmp_path):
         assert not (d / n).exists()
 
 
-def test_run_info_ffpp_hashes(tmp_path):
-    """I3: ffpp_config_hash = file_hash của file config FF++ khi file tồn tại; stage hash None khi không có ff_cfg."""
-    from ffd.config import file_hash
+def _ff_yaml(path, data_root, out_root, **kw):
+    import yaml
 
-    ff = tmp_path / "ff.yaml"
-    ff.write_text("a: 1\n", encoding="utf-8")
-    c = cfg(runs_root=tmp_path, ffpp_config=ff)
-    write_run_info(tmp_path / "r", c, {"model_commit": "abc"})
+    d = {"data_root": str(data_root), "out_root": str(out_root), "splits_dir": f"{out_root}/sp", **kw}
+    path.write_text(yaml.safe_dump(d), encoding="utf-8")
+    return path
+
+
+def test_run_info_ffpp_hashes(tmp_path):
+    """R1: ffpp_config_hash băm Config đã parse (nạp từ file khi không truyền ff_cfg); không có file -> None."""
+    from compsynth_ff.config import load_config, stage_hash
+    from ffd.rundir import ffpp_config_hash
+
+    ff = _ff_yaml(tmp_path / "ff.yaml", "F:/data", "F:/out")
+    write_run_info(tmp_path / "r", cfg(runs_root=tmp_path, ffpp_config=ff), {"model_commit": "abc"})
     j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
-    assert j["ffpp_config_hash"] == file_hash(ff) and j["ffpp_stage_hash"] is None
+    ffc = load_config(ff)
+    assert j["ffpp_config_hash"] == ffpp_config_hash(ffc) and j["ffpp_stage_hash"] == stage_hash(ffc, "render")
     assert j["model_commit"] == "abc" and j["model_revision"] is None
+    write_run_info(tmp_path / "r2", cfg(runs_root=tmp_path, ffpp_config=tmp_path / "none.yaml"), {})
+    j2 = json.loads((tmp_path / "r2/run_info.json").read_text(encoding="utf-8"))
+    assert j2["ffpp_config_hash"] is None and j2["ffpp_stage_hash"] is None
+
+
+def test_ffpp_config_hash_ignores_paths_not_params(tmp_path):
+    """R1: cùng tham số, khác đường dẫn/ổ đĩa/comment/thứ tự khóa -> cùng hash; đổi tham số -> khác hash."""
+    from compsynth_ff.config import load_config
+    from ffd.rundir import ffpp_config_hash
+
+    a = load_config(_ff_yaml(tmp_path / "a.yaml", "F:/DeepFakeData/FF", "F:/DeepFakeData/out", crf=23))
+    b_path = tmp_path / "b.yaml"
+    b_path.write_text("# may GPU khac\ncrf: 23\nout_root: /mnt/data/out\ndata_root: /mnt/data/FF\n"
+                      "splits_dir: /home/u/sp\n", encoding="utf-8")
+    b = load_config(b_path)
+    c = load_config(_ff_yaml(tmp_path / "c.yaml", "F:/DeepFakeData/FF", "F:/DeepFakeData/out", crf=24))
+    assert ffpp_config_hash(a) == ffpp_config_hash(b) != ffpp_config_hash(c)
 
 
 def test_force_removes_scores_and_eval_info(tmp_path):
