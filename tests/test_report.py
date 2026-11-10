@@ -296,3 +296,26 @@ def test_delong_csv_is_clustered_by_tid(tmp_path):
     vb = video_scores(pd.read_parquet(tmp_path / "aug/raw+comp/seed0/scores_ffpp_test.parquet"))
     dd, z, p = delong_paired_clustered(va.label, va.score, vb.score, va.video_id.str.rsplit("_", n=1).str[0])
     assert r["diff"] == pytest.approx(dd) and r.z == pytest.approx(z) and r.p == pytest.approx(p)
+
+
+def test_per_cell_frame_level_with_mixed_regions_in_video(tmp_path):
+    """Final I3: một video (tid, method) có frame thuộc nhiều tổ hợp vùng; per_cell tính ở mức frame (MINH HỌA)."""
+    rng = np.random.default_rng(0)
+    for m in ARMS:
+        for s in range(2):
+            rows = []
+            for t in range(12):
+                tid = f"t{t:02d}"
+                for f in range(4):
+                    rows.append((f"{m}/seed{s}", m, s, "", "compsynth_test", f"{tid}|real", f, 0,
+                                 rng.normal(0, 1), "real", "", BEST_STEP))
+                    cell = "eyes|DF" if f < 2 else "nose+mouth|DF"
+                    rows.append((f"{m}/seed{s}", m, s, "", "compsynth_test", f"{tid}|DF", f, 1,
+                                 rng.normal(STRENGTH[m], 1), cell, "", BEST_STEP))
+            df = pd.concat([pd.DataFrame(rows, columns=COLS), fake_scores(m, s)])
+            put(tmp_path, df, m, s)
+    out = build_report(tmp_path)
+    pc = (out / "per_cell.md").read_text(encoding="utf-8")
+    assert "mức frame" in pc and "eyes|DF" in pc and "nose+mouth|DF" in pc
+    by_k = pc[pc.index("## AUC theo số vùng k'"):]
+    assert "| 1 |" in by_k and "| 2 |" in by_k

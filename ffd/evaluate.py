@@ -13,8 +13,9 @@ Quy ước:
 - ffpp_test: FFppRawCore(test) (tập video kỳ vọng từ frames.parquet subset test, hợp thêm discover_targets nếu data_root tồn tại;
   không có data_root -> expected_source="artifacts_only" ghi vào run/eval_info.json), video_id = "{tid}_{src}", cell = "". Video kỳ vọng (discover_targets, subset test) không còn frame keep
   -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; video chấm được mà không thuộc tập kỳ vọng -> ValueError.
-- compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|{region}|{method}"
-  (region = các vùng đã bốc nối "+", spec augmentation 11/11); cell = "{region}|{method}" (fake) | "real"; label = L0.
+- compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|{method}" (một video ghép
+  = mọi frame của (tid, method); vùng bốc theo từng frame); cell = "{region}|{method}" (fake, region = các vùng nối "+")
+  | "real"; label = L0. Bảng theo cell/method/k' của report tính ở mức frame.
 - cdf2: manifest của `prep_cross` (cross_roots[name] là thư mục chứa manifest.parquet + crops/, hoặc cha của nó
   chứa thư mục `name/`). Chỉ chấm frame keep=True. Video chỉ có dòng frame_idx == -1 & drop_reason == "no_usable_frame"
   -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; drop_reason == "decode_error" -> flag="decode_error"
@@ -162,7 +163,7 @@ def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
         if k == "real":
             v, c = f"{tid}|real", "real"
         else:
-            v, c = f"{tid}|{r}|{me}", f"{r}|{me}"
+            v, c = f"{tid}|{me}", f"{r}|{me}"
         lab = L0_CODE[k]  # KeyError nếu kind lạ
         vids.append(v); cells.append(c); labels.append(lab); fidx.append(m["frame_idx"])  # noqa: E702
     lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval compsynth_test")

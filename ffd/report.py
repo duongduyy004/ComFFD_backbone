@@ -93,7 +93,7 @@ def _load(runs_root: Path):
     files = sorted(p for p in runs_root.rglob("scores_*.parquet") if "report" not in p.relative_to(runs_root).parts)
     if not files:
         raise FileNotFoundError(f"Không có scores_*.parquet dưới {runs_root}")
-    seen, tables, fauc, stale, best_cache = {}, {}, {}, [], {}
+    seen, tables, fauc, stale, best_cache, frames = {}, {}, {}, [], {}, {}
     for p in files:
         df = pd.read_parquet(p)
         miss = set(REQUIRED) - set(df.columns)
@@ -112,7 +112,9 @@ def _load(runs_root: Path):
             seen[key] = p
             tables[key] = _video_table(g, key)
             fauc[key] = _frame_auc(g)
-    return tables, fauc, stale
+            if key[0] == "compsynth_test":
+                frames[key] = g[g.flag == ""]
+    return tables, fauc, stale, frames
 
 
 def _runs_without_prereg(runs_root: Path) -> list:
@@ -147,7 +149,7 @@ def _arm_config_diffs(runs_root: Path) -> list:
 
 def build_report(runs_root) -> Path:
     runs_root = Path(runs_root)
-    tables, fauc, stale = _load(runs_root)
+    tables, fauc, stale, frames = _load(runs_root)
     out = runs_root / "report"
 
     # ---- summary
@@ -252,7 +254,7 @@ def build_report(runs_root) -> Path:
     md += table(arm_names)
     md += ["", "## Chú thích", "",
            "- AUC video: điểm video = trung bình logit các frame; compsynth_test tính trên đơn vị ô "
-           "(\"{tid}|region|method\", \"{tid}|real\"; region = các vùng ghép nối bằng +).",
+           "(\"{tid}|method\", \"{tid}|real\"); bảng theo vùng/k' ở per_cell.md tính mức frame.",
            f"- CI: bootstrap percentile seed 0, n={N_BOOT}, resample theo CỤM video nguồn tid cho "
            f"{', '.join(TID_CLUSTERED)} (real và mọi fake/ô của cùng tid cùng vào/ra); dataset khác: cụm = video.",
            "- DeLong (delong.csv): ghép cặp trên video chung, GOM CỤM theo cùng cụm với CI (tid cho "
@@ -272,9 +274,8 @@ def build_report(runs_root) -> Path:
 
     # ---- per_cell.md (compsynth_test)
     pc = []
-    for (ds, mode, split, seed), v in sorted(tables.items()):
-        if ds != "compsynth_test":
-            continue
+    for (ds, mode, split, seed), v in sorted(frames.items()):  # mức FRAME: vùng ghép đổi theo frame trong một video
+        v = v.rename(columns={"logit": "score"})
         real = v[v.cell == "real"]
         for c, g in v.groupby("cell"):
             if c == "real":
@@ -297,14 +298,16 @@ def build_report(runs_root) -> Path:
                                auc=auc(both.label, both.score) if both.label.nunique() == 2 else np.nan,
                                frac_pos=float((g.score > 0).mean())))
     pcd = pd.DataFrame(pc, columns=["arm", "seed", "cell", "n", "auc", "frac_pos"])
-    pm = ["# AUC theo ô CompSynth-FF test", ""]
+    pm = ["# AUC CompSynth-FF test theo method, số vùng k' và tổ hợp vùng (mức frame)", "",
+          "Mọi bảng dưới đây tính ở mức frame (frame ảnh ghép của nhóm vs mọi frame real), vì vùng ghép bốc theo "
+          "từng frame; cột n = số frame.", ""]
     if pcd.empty:
         pm.append("Không có run nào được chấm trên compsynth_test.")
     else:
         names = sorted(pcd.arm.unique())
 
         def pivot(cells, col, title, head="cell", strip=""):
-            out_ = [title, "", f"| {head} | n_video | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
+            out_ = [title, "", f"| {head} | n_frame | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
             for c in cells:
                 parts, nvid = [], int(pcd[pcd.cell == c].groupby("arm").n.max().max())
                 for a in names:
@@ -317,13 +320,13 @@ def build_report(runs_root) -> Path:
         by_m = sorted(c for c in allc if c.startswith("method:"))
         by_k = sorted((c for c in allc if c.startswith("k:")), key=lambda c: int(c[2:]))
         fake_cells = sorted(c for c in allc if c != "real" and c not in by_m and c not in by_k)
-        pm += pivot(by_m, "auc", "## AUC theo method (mọi ảnh ghép của method vs mọi video real), trung bình seed ± sd",
+        pm += pivot(by_m, "auc", "## AUC theo method (frame ảnh ghép của method vs mọi frame real), trung bình seed ± sd",
                     "method", "method:") + [""]
-        pm += pivot(by_k, "auc", "## AUC theo số vùng k' (ảnh ghép k' vùng vs mọi video real), trung bình seed ± sd",
+        pm += pivot(by_k, "auc", "## AUC theo số vùng k' (frame ảnh ghép k' vùng vs mọi frame real), trung bình seed ± sd",
                     "k'", "k:") + [""]
         pm += pivot(fake_cells, "auc", "## AUC theo tổ hợp vùng|method, trung bình seed ± sd") + [""]
         neg = [c for c in ("real",) if c in allc]
-        pm += pivot(neg, "frac_pos", "## Nhãn 0: tỉ lệ video bị chấm fake (score > 0), trung bình seed ± sd")
+        pm += pivot(neg, "frac_pos", "## Nhãn 0: tỉ lệ frame bị chấm fake (score > 0), trung bình seed ± sd")
     per_cell_md = "\n".join(pm) + "\n"
 
     # ---- ghi

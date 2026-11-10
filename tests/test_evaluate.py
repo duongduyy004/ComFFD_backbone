@@ -116,7 +116,9 @@ def test_eval_compsynth_test_cells(trained_tiny_run, ffpp_synth, vc):
     assert len(fk) and (fk.cell.str.count(r"\|") == 1).all() and (fk.label == 1).all()
     assert (df[[k != "fake" for k in kinds]].label == 0).all()
     assert fk.cell.str.fullmatch(r"(eyes|nose|mouth|skin)(\+(eyes|nose|mouth|skin))*\|(DF|F2F|FS|NT|FSh)").all()
-    assert (fk.video_id.str.count(r"\|") == 2).all()
+    # Final I3: đơn vị video của ảnh ghép = (tid, method); vùng bốc theo từng frame nằm ở cell
+    assert (fk.video_id == [f"{t}|{m}" for t, m in zip(core.man.tid[[k == "fake" for k in kinds]],
+                                                       core.man.method[[k == "fake" for k in kinds]])]).all()
     assert df[df.cell == "real"].video_id.str.endswith("|real").all()
     df2 = ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)  # cùng ckpt thì cùng điểm
     assert df.logit.to_numpy() == pytest.approx(df2.logit.to_numpy())
