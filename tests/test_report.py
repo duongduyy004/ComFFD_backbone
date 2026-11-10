@@ -14,7 +14,7 @@ COLS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "lab
         "best_step"]
 BEST_STEP = 10
 ARMS = ("raw", "raw+comp", "raw+sb")
-STRENGTH = {"raw": 0.8, "raw+comp": 1.6, "raw+sb": 1.2, "compffd": 2.0}
+STRENGTH = {"raw": 0.8, "raw+comp": 1.6, "raw+sb": 1.2}
 
 
 def fake_scores(mode, seed, dataset="ffpp_test", nvid=20, split="", drop=(), flagged=(), cells=False):
@@ -26,7 +26,7 @@ def fake_scores(mode, seed, dataset="ffpp_test", nvid=20, split="", drop=(), fla
         vid = f"v{k:03d}"
         if vid in drop:
             continue
-        cell = ("hair|DF" if k % 4 == 1 else "skin|F2F") if (cells and lab) else "real"
+        cell = ("eyes+mouth|DF" if k % 4 == 1 else "nose|F2F") if (cells and lab) else "real"
         for f in range(3):
             lg = rng.normal(lab * STRENGTH[mode], 1.0)
             flag = ""
@@ -39,7 +39,7 @@ def fake_scores(mode, seed, dataset="ffpp_test", nvid=20, split="", drop=(), fla
 
 
 def put(root, df, mode, seed, split=""):
-    d = root / ("compffd" if mode == "compffd" else "aug") / (split if mode == "compffd" else mode) / f"seed{seed}"
+    d = root / "aug" / mode / f"seed{seed}"
     d.mkdir(parents=True, exist_ok=True)
     if not (d / "best.pt").exists():  # report đối chiếu best_step trong scores với best.pt (I6)
         torch.save({"step": BEST_STEP, "trainable": {}}, d / "best.pt")
@@ -85,15 +85,6 @@ def test_pairing_reports_dropped_videos(tree):
     assert (d[~d.index.isin(hit.index)].n_dropped == 0).all()
 
 
-def test_compffd_never_paired(tree):
-    for s in range(3):
-        put(tree, fake_scores("compffd", s, split="FF-03"), "compffd", s, "FF-03")
-    out = build_report(tree)
-    d = pd.read_csv(out / "delong.csv")
-    assert len(d) == 9 and "compffd" not in set(d.arm_a) | set(d.arm_b)
-    assert "compffd" in (out / "main.md").read_text(encoding="utf-8")
-
-
 def test_duplicate_run_rejected(tree):
     p = tree / "aug" / "raw" / "seed0" / "scores_ffpp_test.parquet"
     d = tree / "aug" / "dup" / "seed0"
@@ -123,7 +114,12 @@ def test_per_cell_and_mixed_datasets(tmp_path):
             put(tmp_path, df, m, s)
     out = build_report(tmp_path)
     pc = (out / "per_cell.md").read_text(encoding="utf-8")
-    assert "hair|DF" in pc and "skin|F2F" in pc
+    assert "eyes+mouth|DF" in pc and "nose|F2F" in pc
+    assert "## AUC theo method" in pc and "## AUC theo số vùng k'" in pc
+    by_m = pc[pc.index("## AUC theo method"):pc.index("## AUC theo số vùng k'")]
+    assert "| DF |" in by_m and "| F2F |" in by_m
+    by_k = pc[pc.index("## AUC theo số vùng k'"):]
+    assert "| 1 |" in by_k and "| 2 |" in by_k
     s = pd.read_parquet(out / "summary.parquet")
     assert set(s.dataset) == {"ffpp_test", "compsynth_test"}
     d = pd.read_csv(out / "delong.csv")

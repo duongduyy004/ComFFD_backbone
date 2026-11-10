@@ -17,7 +17,6 @@ def cfg(**kw):
 
 def test_run_dir_layout(tmp_path):
     assert run_dir(cfg(mode="raw+sb", seed=2, runs_root=tmp_path)) == tmp_path / "aug/raw+sb/seed2"
-    assert run_dir(cfg(mode="compffd", split="FF-03", seed=0, runs_root=tmp_path)) == tmp_path / "compffd/FF-03/seed0"
 
 
 def test_refuse_finished_run(tmp_path):

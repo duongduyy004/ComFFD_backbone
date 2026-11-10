@@ -16,8 +16,6 @@ FFPP_STAGE = "render"  # stage cuối của compsynth_ff (gồm cả trường e
 
 
 def run_dir(cfg: TrainConfig) -> Path:
-    if cfg.mode == "compffd":
-        return Path(cfg.runs_root) / "compffd" / cfg.split / f"seed{cfg.seed}"
     return Path(cfg.runs_root) / "aug" / cfg.mode / f"seed{cfg.seed}"
 
 

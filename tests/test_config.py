@@ -27,13 +27,12 @@ def write_yaml(path, **kw):
 def test_defaults_and_types(tmp_path):
     c = load_train_config(write_yaml(tmp_path))
     assert c.selfblend == DEFAULT_T and c.lora_targets == ("q_proj", "v_proj")
-    assert isinstance(c.runs_root, Path) and c.prereg is None and c.split is None
+    assert isinstance(c.runs_root, Path) and c.prereg is None and not hasattr(c, "split")
 
 
-def test_compffd_requires_split(tmp_path):
-    with pytest.raises(ValueError):
-        load_train_config(write_yaml(tmp_path, mode="compffd", split=None))
-    assert load_train_config(write_yaml(tmp_path, mode="compffd", split="FF-03")).split == "FF-03"
+def test_compffd_mode_rejected(tmp_path):
+    with pytest.raises(ValueError):  # spec augmentation 11/11: bỏ chế độ compffd (E0)
+        load_train_config(write_yaml(tmp_path, mode="compffd"))
 
 
 def test_bad_mode(tmp_path):

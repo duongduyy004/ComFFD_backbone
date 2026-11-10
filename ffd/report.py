@@ -9,15 +9,16 @@ Quy tắc trung thực:
   ("{tid}|..."), các video cùng tid (real + mọi fake/ô của nó) cùng vào hoặc cùng ra; dataset khác (cdf2) cụm = video.
 - AUC frame: trên mọi dòng frame thật (bỏ dòng cờ frame_idx=-1), báo cạnh AUC video trong main.md.
 - DeLong ghép cặp, gom cụm theo cùng cụm với CI (`stats.delong_paired_clustered`, Obuchowski 1997): các arm
-  (mode != compffd) so từng cặp trong CÙNG dataset và CÙNG seed, qua
+  so từng cặp trong CÙNG dataset và CÙNG seed, qua
   `stats.paired_frames` trên video_id (chỉ giao các video chung; `n_dropped` = số video chỉ có ở một bên, ghi vào
-  delong.csv và main.md). compffd báo riêng, không ghép với arm.
-- Đủ kết quả: mỗi arm kỳ vọng (EXPECTED_ARMS, kể cả arm vắng hoàn toàn) và mỗi compffd hiện có phải có đủ
+  delong.csv và main.md).
+- Đủ kết quả: mỗi arm kỳ vọng (EXPECTED_ARMS, kể cả arm vắng hoàn toàn) phải có đủ
   seed {0,1,2} x mọi dataset đã gặp ở đâu đó; thiếu thì KHÔNG raise mà liệt kê
   đầu main.md (mục CẢNH BÁO) và đánh dấu ô bị ảnh hưởng. CI trong main.md luôn lấy từ seed 0 (thiếu -> "CI: thiếu seed 0").
 - Cùng (dataset, mode, split, seed) xuất hiện ở hai file scores -> ValueError; video có nhãn không nhất quán -> ValueError.
 - run_info["config"] của các run arm (aug/) chỉ được khác nhau ở ARM_FREE_KEYS; khóa khác lệch -> liệt kê dưới CẢNH BÁO.
-- per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), a0ff/real báo tỉ lệ chấm "fake" (score > 0).
+- per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), real báo tỉ lệ chấm "fake" (score > 0);
+  thêm bảng gộp theo method và theo số vùng k' (spec augmentation 11/11).
 - Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed 0]"; một seed -> sd "n/a".
 - Mỗi scores_*.parquet phải có best_step bằng step của best.pt HIỆN TẠI trong cùng thư mục run; lệch, thiếu best.pt
   hoặc nhiều giá trị -> liệt kê dưới CẢNH BÁO (điểm cũ không còn khớp checkpoint).
@@ -53,7 +54,7 @@ def _cluster(dataset: str, video_id: str) -> str:
 
 
 def _arm_label(mode: str, split: str) -> str:
-    return f"compffd/{split}" if mode == "compffd" else mode
+    return mode
 
 
 def _video_table(g: pd.DataFrame, key) -> pd.DataFrame:
@@ -115,9 +116,9 @@ def _load(runs_root: Path):
 
 
 def _runs_without_prereg(runs_root: Path) -> list:
-    """Run dưới aug/ và compffd/ có run_info.json nhưng prereg_hash rỗng (đường dẫn tương đối, posix)."""
+    """Run dưới aug/ có run_info.json nhưng prereg_hash rỗng (đường dẫn tương đối, posix)."""
     out = []
-    for top in ("aug", "compffd"):
+    for top in ("aug",):
         for p in sorted((runs_root / top).rglob("run_info.json")):
             if not json.loads(p.read_text(encoding="utf-8")).get("prereg_hash"):
                 out.append(p.parent.relative_to(runs_root).as_posix())
@@ -226,8 +227,7 @@ def build_report(runs_root) -> Path:
             lines.append(f"| {a} | " + " | ".join(parts) + " |")
         return lines
 
-    arm_names = sorted(set(summ[summ["mode"] != "compffd"].arm.unique()) | set(EXPECTED_ARMS))
-    cf_names = sorted(summ[summ["mode"] == "compffd"].arm.unique())
+    arm_names = sorted(set(summ.arm.unique()) | set(EXPECTED_ARMS))
     md = ["# AUC video theo arm x dataset", "",
           f"Cột (video) = AUC video trung bình các seed ± sd [CI bootstrap {int((1 - ALPHA) * 100)}%, seed 0, n={N_BOOT}]; "
           "cột (frame) = AUC mức frame trung bình các seed ± sd.", ""]
@@ -250,11 +250,9 @@ def build_report(runs_root) -> Path:
         md += [f"Config các run arm khác nhau ngoài {list(ARM_FREE_KEYS)} ({len(cfg_diffs)} khóa; so sánh arm KHÔNG có kiểm soát):", ""]
         md += [f"- {k}: " + "; ".join(f"{r}={v}" for r, v in sorted(vals.items())) for k, vals in cfg_diffs] + [""]
     md += table(arm_names)
-    if cf_names:
-        md += ["", "## compffd (báo riêng, không ghép cặp với arm)", ""] + table(cf_names)
     md += ["", "## Chú thích", "",
            "- AUC video: điểm video = trung bình logit các frame; compsynth_test tính trên đơn vị ô "
-           "(\"{tid}|region|method\", \"{tid}|real\", a0ff).",
+           "(\"{tid}|region|method\", \"{tid}|real\"; region = các vùng ghép nối bằng +).",
            f"- CI: bootstrap percentile seed 0, n={N_BOOT}, resample theo CỤM video nguồn tid cho "
            f"{', '.join(TID_CLUSTERED)} (real và mọi fake/ô của cùng tid cùng vào/ra); dataset khác: cụm = video.",
            "- DeLong (delong.csv): ghép cặp trên video chung, GOM CỤM theo cùng cụm với CI (tid cho "
@@ -287,8 +285,16 @@ def build_report(runs_root) -> Path:
                 pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g),
                                auc=auc(both.label, both.score) if both.label.nunique() == 2 else np.nan,
                                frac_pos=float((g.score > 0).mean())))
-            else:  # a0ff
-                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g), auc=np.nan,
+        fk = v[(v.cell != "real") & (v.label == 1)]
+        if len(fk):  # gộp theo method và theo số vùng k' (spec augmentation 11/11 §5)
+            parts = fk.cell.str.split("|", n=1)
+            groups = {f"method:{m}": fk[parts.str[1] == m] for m in sorted(set(parts.str[1]))}
+            kk = parts.str[0].str.count(r"\+") + 1
+            groups.update({f"k:{k}": fk[kk == k] for k in sorted(set(kk))})
+            for name, g in groups.items():
+                both = pd.concat([g, real])
+                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=name, n=len(g),
+                               auc=auc(both.label, both.score) if both.label.nunique() == 2 else np.nan,
                                frac_pos=float((g.score > 0).mean())))
     pcd = pd.DataFrame(pc, columns=["arm", "seed", "cell", "n", "auc", "frac_pos"])
     pm = ["# AUC theo ô CompSynth-FF test", ""]
@@ -297,20 +303,27 @@ def build_report(runs_root) -> Path:
     else:
         names = sorted(pcd.arm.unique())
 
-        def pivot(cells, col, title):
-            out_ = [title, "", "| cell | n_video | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
+        def pivot(cells, col, title, head="cell", strip=""):
+            out_ = [title, "", f"| {head} | n_video | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
             for c in cells:
                 parts, nvid = [], int(pcd[pcd.cell == c].groupby("arm").n.max().max())
                 for a in names:
                     x = pcd[(pcd.cell == c) & (pcd.arm == a)][col]
                     parts.append("–" if x.empty else f"{_fmt(x.mean())} ± {_fmt(x.std(ddof=1) if len(x) > 1 else float('nan'))}")
-                out_.append(f"| {c} | {nvid} | " + " | ".join(parts) + " |")
+                out_.append(f"| {c[len(strip):]} | {nvid} | " + " | ".join(parts) + " |")
             return out_
 
-        fake_cells = sorted(c for c in pcd.cell.unique() if c not in ("real", "a0ff"))
-        pm += pivot(fake_cells, "auc", "Ô fake: AUC (video của ô vs mọi video real), trung bình seed ± sd") + [""]
-        neg = [c for c in ("a0ff", "real") if c in set(pcd.cell)]
-        pm += pivot(neg, "frac_pos", "Ô nhãn 0: tỉ lệ video bị chấm fake (score > 0), trung bình seed ± sd")
+        allc = set(pcd.cell)
+        by_m = sorted(c for c in allc if c.startswith("method:"))
+        by_k = sorted((c for c in allc if c.startswith("k:")), key=lambda c: int(c[2:]))
+        fake_cells = sorted(c for c in allc if c != "real" and c not in by_m and c not in by_k)
+        pm += pivot(by_m, "auc", "## AUC theo method (mọi ảnh ghép của method vs mọi video real), trung bình seed ± sd",
+                    "method", "method:") + [""]
+        pm += pivot(by_k, "auc", "## AUC theo số vùng k' (ảnh ghép k' vùng vs mọi video real), trung bình seed ± sd",
+                    "k'", "k:") + [""]
+        pm += pivot(fake_cells, "auc", "## AUC theo tổ hợp vùng|method, trung bình seed ± sd") + [""]
+        neg = [c for c in ("real",) if c in allc]
+        pm += pivot(neg, "frac_pos", "## Nhãn 0: tỉ lệ video bị chấm fake (score > 0), trung bình seed ± sd")
     per_cell_md = "\n".join(pm) + "\n"
 
     # ---- ghi

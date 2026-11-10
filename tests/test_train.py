@@ -62,9 +62,6 @@ def write_split(ffpp, name, seen, unseen=()):
 def test_val_items_reject_test_subset(ffpp_synth, tmp_path):
     with pytest.raises(LeakageError):
         T._val_items(mkcfg(), ffpp_synth, "test")
-    write_split(ffpp_synth, "FF-G", sorted(TrainCore(ffpp_synth).allowed))
-    with pytest.raises(LeakageError):
-        T._val_items(mkcfg(mode="compffd", split="FF-G"), ffpp_synth, "test")
 
 
 def test_val_metrics_single_class_or_nan_raises():
@@ -78,25 +75,8 @@ def test_val_metrics_single_class_or_nan_raises():
         T._val_metrics(bad)
 
 
-def test_split_path_and_name_validation(ffpp_synth, tmp_path):
-    from ffd.config import load_train_config, split_path
-
-    with pytest.raises(FileNotFoundError):
-        split_path(mkcfg(mode="compffd", split="nope"), ffpp_synth)
-    sp = write_split(ffpp_synth, "FF-N", [("a", "b")])
-    assert split_path(mkcfg(mode="compffd", split="FF-N"), ffpp_synth) == sp
-    y = tmp_path / "c.yaml"
-    for bad in ("a/b", "a\\b"):
-        y.write_text("ffpp_config: x.yaml\nruns_root: r\nmode: compffd\nseed: 0\n"
-                     "total_steps: 1\neval_every: 1\nckpt_every: 1\n"
-                     "split: " + json.dumps(bad) + "\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="TÊN"):
-            load_train_config(y)
-
-
 def test_val_set_for():
     assert val_set_for(mkcfg(mode="raw+comp")) == "ffpp_val_raw"
-    assert val_set_for(mkcfg(mode="compffd", split="s.json")) == "compsynth_val_seen"
 
 
 def test_missing_cuda_raises(ffpp_synth, tiny, tmp_path, monkeypatch):
@@ -125,25 +105,6 @@ def test_val_scores_raw(ffpp_synth, tiny):
     df = val_scores(m, mkcfg(), ffpp_synth, batch_size=4, device="cpu")
     assert list(df.columns) == ["video_id", "frame_idx", "label", "logit"]
     assert set(df.label) == {0, 1} and len(df) > 0 and df.logit.notna().all()
-
-
-def test_val_scores_compffd_filters_to_seen(ffpp_synth, tiny, tmp_path):
-    from compsynth_ff.dataset import EvalCore
-    from ffd.model import Detector
-
-    core = TrainCore(ffpp_synth)
-    cells = sorted(core.allowed)
-    seen, unseen = cells[:1], cells[1:]
-    write_split(ffpp_synth, "FF-V", seen, unseen)
-    cfg = mkcfg(mode="compffd", split="FF-V")
-    m = Detector(cfg, vision_config=tiny["vision_config"])
-    df = val_scores(m, cfg, ffpp_synth, batch_size=4, device="cpu")
-    ec = EvalCore(ffpp_synth, "val")
-    metas = [ec.meta(i) for i in range(len(ec))]
-    exp = [x for x in metas if x["kind"] == "real" or (x["region"], x["method"]) in {tuple(c) for c in seen}]
-    assert len(df) == len(exp) and len(df) < len(metas) or not unseen
-    assert all(v.endswith("|real") or v.count("|") == 2 for v in df.video_id)
-    assert (df.label == 0).sum() == sum(x["kind"] == "real" for x in exp)
 
 
 def test_resume_matches_continuous(ffpp_synth, tiny, tmp_path, monkeypatch):
@@ -202,17 +163,6 @@ def test_force_rerun_clears_stale(ffpp_synth, tiny, tmp_path):
         run(cfg, ffpp_synth, tiny)
     d = run(cfg, ffpp_synth, tiny, force=True)
     assert [r["step"] for r in read_jsonl(d / "val_curve.jsonl")] == [4]
-
-
-def test_compffd_end_to_end(ffpp_synth, tiny, tmp_path):
-    write_split(ffpp_synth, "FF-E", sorted(TrainCore(ffpp_synth).allowed))
-    cfg = mkcfg(mode="compffd", split="FF-E", runs_root=tmp_path, total_steps=4, eval_every=2, ckpt_every=2)
-    d = run(cfg, ffpp_synth, tiny)
-    assert d == tmp_path / "compffd" / "FF-E" / "seed0"
-    assert {"best.pt", "last.pt", "done.flag"} <= set(os.listdir(d))
-    assert [r["step"] for r in read_jsonl(d / "val_curve.jsonl")] == [2, 4]
-    info = json.loads((d / "run_info.json").read_text(encoding="utf-8"))
-    assert info["split_hash"]
 
 
 def test_restart_without_force_or_resume_refused(ffpp_synth, tiny, tmp_path, monkeypatch):

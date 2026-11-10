@@ -9,9 +9,7 @@ Quy ước:
   Step cuối luôn val và lưu last.pt.
 - Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. `allow_cpu=True` chỉ dùng trong test
   (CPU, không autocast). `ff_cfg` cho phép test truyền Config tổng hợp thay vì nạp từ cfg.ffpp_config.
-- Val: arm -> FFppRawCore(val); compffd -> EvalCore(val) lọc real + ô seen của split (cfg.split là TÊN,
-  file là <out_root>/splits/<split>.json qua `config.split_path`). video_id compffd: "{tid}|real" hoặc
-  "{tid}|{region}|{method}". `allow_read("train", ...)` gọi ngay trước khi mở từng tập.
+- Val: FFppRawCore(val) cho mọi arm. `allow_read("train", ...)` gọi ngay trước khi mở từng tập.
 - grad_accum: một step luôn gồm đúng `grad_accum` micro-batch, kể cả khi vượt biên epoch (bộ tích lũy nằm
   ngoài vòng epoch) nên vị trí resume = step * grad_accum micro-batch là chính xác.
 - Resume: best.pt mồ côi (step > last.step) được ghi lại từ `best_state` trong last.pt (hoặc xóa nếu chưa có best).
@@ -35,7 +33,7 @@ from compsynth_ff.config import load_config
 from compsynth_ff.io_utils import write_json_atomic
 
 from . import progress
-from .config import TrainConfig, split_path
+from .config import TrainConfig
 from .data.arms import build_train_dataset
 from .data.transforms import eval_transform
 from .guards import allow_read
@@ -60,21 +58,9 @@ def _val_items(cfg: TrainConfig, ff_cfg, subset: str = "val"):
     """Trả (core, rows); rows = list (index trong core, video_id, frame_idx, label)."""
     from compsynth_ff import dataset as D
 
-    allow_read("train", f"{'compsynth' if cfg.mode == 'compffd' else 'ffpp'}_{subset}")
-    if cfg.mode != "compffd":
-        core = D.FFppRawCore(ff_cfg, subset)
-        rows = [(i, f"{t}_{s}", int(f), 0 if s == "real" else 1) for i, (t, f, s) in enumerate(core.items)]
-        return core, rows
-    sp = json.loads(split_path(cfg, ff_cfg).read_text(encoding="utf-8"))
-    seen = {tuple(x) for x in sp["seen"]}
-    core = D.EvalCore(ff_cfg, subset)
-    rows = []
-    for i in range(len(core)):
-        m = core.meta(i)
-        if m["kind"] == "real":
-            rows.append((i, f"{m['tid']}|real", m["frame_idx"], 0))
-        elif (m["region"], m["method"]) in seen:
-            rows.append((i, f"{m['tid']}|{m['region']}|{m['method']}", m["frame_idx"], 1))
+    allow_read("train", f"ffpp_{subset}")
+    core = D.FFppRawCore(ff_cfg, subset)
+    rows = [(i, f"{t}_{s}", int(f), 0 if s == "real" else 1) for i, (t, f, s) in enumerate(core.items)]
     return core, rows
 
 
@@ -187,10 +173,8 @@ def _epoch_batches(n: int, bs: int, seed: int, epoch: int) -> list[list[int]]:
 
 
 def _video_of(ds, idx: int) -> str:
-    """tid của video mà mục idx lấy từ (real ở idx chẵn; fake lẻ của compffd lấy từ khe fake)."""
+    """tid của frame gốc ở khe idx (real ở idx chẵn, fake lẻ cùng khe; fake có thể đã bốc lại frame)."""
     c, k = ds.core, idx // 2
-    if idx % 2 == 1 and hasattr(c, "fake_slots"):
-        return str(c.fake_slots[k % len(c.fake_slots)][0])
     return str(c.real_frames[k % len(c.real_frames)][0])
 
 
@@ -217,8 +201,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         raise RuntimeError("Không có CUDA: train cần GPU (allow_cpu=True chỉ dành cho test).")
     device = torch.device(device or ("cuda" if has_cuda else "cpu"))
     ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
-    allow_read("train", "compsynth_train" if cfg.mode == "compffd" else "ffpp_train")
-    sp_file = split_path(cfg, ff_cfg) if cfg.mode == "compffd" else None  # lỗi sớm nếu thiếu split
+    allow_read("train", "ffpp_train")
 
     d = prepare_run_dir(cfg, resume=resume, force=force)
     if resume and not (d / "last.pt").exists():
@@ -230,7 +213,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     model = Detector(cfg, vision_config=vision_config).to(device)
     commit = model.trunk.commit
     if not resume:  # ghi sau khi dựng model để có commit HF đã resolve
-        write_run_info(d, cfg, {"split_file": sp_file, "model_commit": commit}, ff_cfg=ff_cfg)
+        write_run_info(d, cfg, {"model_commit": commit}, ff_cfg=ff_cfg)
     else:
         info = json.loads((d / "run_info.json").read_text(encoding="utf-8")) if (d / "run_info.json").exists() else {}
         if info.get("model_commit") != commit:
@@ -276,7 +259,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         raise FloatingPointError(f"Loss không hữu hạn ở step {s}: {float(loss)}; video_id={err['video_ids']}")
 
     acc_loss, acc_n, acc_vids = 0.0, 0, []  # ngoài vòng epoch: một step luôn đủ `accum` micro-batch
-    run_name = f"compffd/{cfg.split}" if cfg.mode == "compffd" else cfg.mode
+    run_name = cfg.mode
     pb = progress.bar(total=cfg.total_steps, initial=step, desc=f"train {run_name} seed{cfg.seed}", unit="step")
     if best is not None:
         pb.set_postfix(best_auc=f"{best['auc_video']:.4f}")

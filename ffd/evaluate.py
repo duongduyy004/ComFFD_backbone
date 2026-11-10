@@ -13,8 +13,8 @@ Quy ước:
 - ffpp_test: FFppRawCore(test) (tập video kỳ vọng từ frames.parquet subset test, hợp thêm discover_targets nếu data_root tồn tại;
   không có data_root -> expected_source="artifacts_only" ghi vào run/eval_info.json), video_id = "{tid}_{src}", cell = "". Video kỳ vọng (discover_targets, subset test) không còn frame keep
   -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; video chấm được mà không thuộc tập kỳ vọng -> ValueError.
-- compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|a0ff|{region}|{borrowed or method}"
-  | "{tid}|{region}|{method}"; cell = "{region}|{method}" (fake) | "a0ff" | "real"; label = L0.
+- compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|{region}|{method}"
+  (region = các vùng đã bốc nối "+", spec augmentation 11/11); cell = "{region}|{method}" (fake) | "real"; label = L0.
 - cdf2: manifest của `prep_cross` (cross_roots[name] là thư mục chứa manifest.parquet + crops/, hoặc cha của nó
   chứa thư mục `name/`). Chỉ chấm frame keep=True. Video chỉ có dòng frame_idx == -1 & drop_reason == "no_usable_frame"
   -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; drop_reason == "decode_error" -> flag="decode_error"
@@ -161,9 +161,6 @@ def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
         k, tid, r, me = m["kind"], m["tid"], m["region"], m["method"]
         if k == "real":
             v, c = f"{tid}|real", "real"
-        elif k == "a0ff":
-            bm = core.man["borrowed_method"].iloc[i]
-            v, c = f"{tid}|a0ff|{r}|{bm if isinstance(bm, str) and bm else me}", "a0ff"
         else:
             v, c = f"{tid}|{r}|{me}", f"{r}|{me}"
         lab = L0_CODE[k]  # KeyError nếu kind lạ
@@ -234,8 +231,8 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, pr
             df = _cross(model, ds, cross_roots[ds], batch_size, device)
         frames.append(_frame(df, dataset=ds))
     df = pd.concat(frames, ignore_index=True)
-    rid = f"compffd/{cfg.split}/seed{cfg.seed}" if cfg.mode == "compffd" else f"{cfg.mode}/seed{cfg.seed}"
-    df = _frame(df, run=rid, mode=cfg.mode, seed=int(cfg.seed), split=cfg.split or "", best_step=int(ck["step"]))
+    rid = f"{cfg.mode}/seed{cfg.seed}"
+    df = _frame(df, run=rid, mode=cfg.mode, seed=int(cfg.seed), split="", best_step=int(ck["step"]))  # cột split giữ cho tương thích
     df = df[COLUMNS].astype({"frame_idx": "int64", "label": "int64", "logit": "float64", "best_step": "int64"})
     for ds, g in df.groupby("dataset", sort=False):  # một file mỗi dataset: chấm lại dataset nào chỉ thay file đó
         write_parquet_atomic(g.reset_index(drop=True), run / f"scores_{ds}.parquet")

@@ -112,11 +112,11 @@ def test_eval_compsynth_test_cells(trained_tiny_run, ffpp_synth, vc):
     assert len(df) == len(core)
     kinds = core.man.kind.tolist()
     assert (df.cell[[k == "real" for k in kinds]] == "real").all()
-    assert (df.cell[[k == "a0ff" for k in kinds]] == "a0ff").all()
     fk = df[[k == "fake" for k in kinds]]
     assert len(fk) and (fk.cell.str.count(r"\|") == 1).all() and (fk.label == 1).all()
     assert (df[[k != "fake" for k in kinds]].label == 0).all()
-    assert df[[k == "a0ff" for k in kinds]].video_id.str.contains(r"\|a0ff\|").all()
+    assert fk.cell.str.fullmatch(r"(eyes|nose|mouth|skin)(\+(eyes|nose|mouth|skin))*\|(DF|F2F|FS|NT|FSh)").all()
+    assert (fk.video_id.str.count(r"\|") == 2).all()
     assert df[df.cell == "real"].video_id.str.endswith("|real").all()
     df2 = ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)  # cùng ckpt thì cùng điểm
     assert df.logit.to_numpy() == pytest.approx(df2.logit.to_numpy())
@@ -193,7 +193,7 @@ def test_eval_refuses_rebuilt_config_hash_mismatch(trained_tiny_run, tmp_path):
 def test_compsynth_unknown_kind_keyerror(trained_tiny_run, ffpp_synth, vc, monkeypatch):
     from compsynth_ff.dataset import L0_CODE
 
-    monkeypatch.delitem(L0_CODE, "a0ff")
+    monkeypatch.delitem(L0_CODE, "fake")
     with pytest.raises(KeyError):
         ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)
 

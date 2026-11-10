@@ -14,7 +14,7 @@ from typing import Literal
 import yaml
 from compsynth_ff.composite import DEFAULT_T
 
-MODES = ("raw", "raw+comp", "raw+sb", "compffd")
+MODES = ("raw", "raw+comp", "raw+sb")  # compffd (E0) bỏ theo spec 11/11
 # Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI. File prereg chỉ được chứa các khóa này.
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
                "batch_size", "grad_accum", "selfblend", "model_name", "model_revision", "head", "tap_layers",
@@ -35,12 +35,11 @@ def _is_locked(k: str) -> bool:
 class TrainConfig:
     ffpp_config: Path
     runs_root: Path
-    mode: Literal["raw", "raw+comp", "raw+sb", "compffd"]
+    mode: Literal["raw", "raw+comp", "raw+sb"]
     seed: int
     total_steps: int
     eval_every: int
     ckpt_every: int
-    split: str | None = None
     rho: float = 0.5
     model_name: str = "openai/clip-vit-large-patch14-336"
     model_revision: str | None = None  # commit HF của model_name; run thật (không --pilot) bắt buộc ghim qua prereg
@@ -106,19 +105,7 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
         raise ValueError(f"batch_size phải chẵn (nửa real, nửa fake mỗi batch), nhận {cfg.batch_size}")
     if cfg.mode not in MODES:
         raise ValueError(f"mode phải thuộc {MODES}, nhận {cfg.mode!r}")
-    if cfg.mode == "compffd" and not cfg.split:
-        raise ValueError("mode=compffd bắt buộc có split")
-    if cfg.split and ("/" in cfg.split or "\\" in cfg.split):
-        raise ValueError(f"split phải là TÊN (vd FF-03), không phải đường dẫn: {cfg.split!r}")
     return cfg
-
-
-def split_path(cfg: TrainConfig, ff_cfg) -> Path:
-    """<ff_cfg.out_root>/splits/<split>.json; không có file -> FileNotFoundError."""
-    p = Path(ff_cfg.out_root) / "splits" / f"{cfg.split}.json"
-    if not p.exists():
-        raise FileNotFoundError(f"Không thấy file split: {p}")
-    return p
 
 
 def config_hash(cfg: TrainConfig) -> str:

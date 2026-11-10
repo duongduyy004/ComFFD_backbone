@@ -1,6 +1,8 @@
 # ffd — detector CLIP ViT-L/14-336 + LoRA (CompFFD)
 
-So sánh 3 arm huấn luyện (`raw`, `raw+comp`, `raw+sb`) và `compffd` trên FF++ → Celeb-DF v2.
+So sánh 3 arm huấn luyện (`raw`, `raw+comp`, `raw+sb`) trên FF++ → Celeb-DF v2. Ảnh ghép (`raw+comp`) và self-blend
+(`raw+sb`) dùng chung mask `TrainCore.sample_mask` (spec `../spec_code_augmentation_ghep_artifact_2026-11-11.md`).
+Chế độ `compffd` (E0) đã bỏ ngày 11/11/2026.
 Trạng thái: chưa chạy thử trên GPU/dữ liệu thật.
 
 ## Cài đặt
@@ -13,7 +15,7 @@ pip install -e ../preprocessing[gpu] -e .
 
 ## Thứ tự chạy
 
-1. **Preprocessing** (trong `../preprocessing`): extract → select → render val/test. Ra `out_root` có `frames.parquet`, `splits/`, manifest.
+1. **Preprocessing** (trong `../preprocessing`): extract → select → render val/test. Ra `out_root` có `frames.parquet`, `select/cells.parquet`, manifest.
 2. **prep-cross cdf2** (GPU, một lần):
    ```bash
    python -m ffd.cli prep-cross --dataset cdf2 --root /data/Celeb_DFv2 --out /data/cross --ffpp-config ../preprocessing/config.yaml
@@ -58,5 +60,5 @@ Quy ước nhãn Celeb-DF v2: trong `List_of_testing_videos.txt`, nhãn `1` đư
 ## Hạn chế đã biết
 
 - Mới test trên CPU với dữ liệu tổng hợp (MINH HỌA) và CLIP tí hon ngẫu nhiên; chưa chạy ViT-L thật, chưa có FF++ hay Celeb-DF trên máy.
-- Mode `compffd` không đổi σ/q theo seed train (vẫn mở).
+- Mục fake không bốc được mask (`fallback=True`) dùng fake gốc của method đã bốc; theo dõi bằng QC Q9 ở preprocessing.
 - Bốc method đều theo xác suất trên các method dùng được của từng frame.

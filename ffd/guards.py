@@ -24,6 +24,6 @@ def allow_read(stage: Literal["train", "eval"], what: str) -> None:
         raise LeakageError(f"Giai đoạn eval chỉ được đọc {sorted(_EVAL_ALLOWED)}, nhận {what!r}")
 
 
-def val_set_for(cfg) -> Literal["ffpp_val_raw", "compsynth_val_seen"]:
-    """Tập val chọn checkpoint: arm -> FF++ val raw; compffd -> CompSynth val, chỉ ô seen."""
-    return "compsynth_val_seen" if cfg.mode == "compffd" else "ffpp_val_raw"
+def val_set_for(cfg) -> Literal["ffpp_val_raw"]:
+    """Tập val chọn checkpoint: FF++ val raw, giống nhau cho mọi arm (spec augmentation 11/11)."""
+    return "ffpp_val_raw"

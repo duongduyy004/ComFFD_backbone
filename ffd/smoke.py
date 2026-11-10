@@ -7,7 +7,6 @@ Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
-import dataclasses
 import json
 import time
 from pathlib import Path
@@ -60,7 +59,7 @@ def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
     out = Path(cfg.runs_root) / "smoke"
     samples = out / "smoke_samples"
     samples.mkdir(parents=True, exist_ok=True)
-    arm_cfg = dataclasses.replace(cfg, mode="raw+comp") if cfg.mode == "compffd" else cfg
+    arm_cfg = cfg
     _dump_samples(arm_cfg, ff_cfg, "raw+comp", "comp", samples)
     _dump_samples(arm_cfg, ff_cfg, "raw+sb", "sb", samples)
 
