@@ -1,7 +1,7 @@
 # Ví dụ config cho ffd.config.load_train_config. Trạng thái: chưa chạy thử.
 ffpp_config: ../preprocessing/config.example.yaml
 runs_root: runs
-mode: raw            # raw | raw+comp | raw+sb
+mode: raw            # raw | raw+rep
 seed: 0
 rho: 0.5
 # total_steps / eval_every / ckpt_every: GIÁ TRỊ GIỮ CHỖ, sẽ chốt trong pilot.

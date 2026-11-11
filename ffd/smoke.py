@@ -8,11 +8,13 @@ Trạng thái: chưa chạy thử.
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 
 from . import progress
@@ -31,21 +33,17 @@ def _to_png(x: torch.Tensor) -> np.ndarray:
     return np.ascontiguousarray(rgb[:, :, ::-1])
 
 
-def _dump_samples(cfg: TrainConfig, ff_cfg, arm: str, source: str, out: Path) -> int:
-    """Lưu N_SAMPLES ảnh có source == `source` (cùng arm/rho/T như train) để xem bằng mắt."""
-    ds = ArmTrainDataset(ff_cfg, arm, 1.0, cfg.seed, cfg.selfblend)  # rho=1: mọi mẫu fake đi qua nhánh arm
-    n = 0
-    for idx in range(1, len(ds), 2):  # chỉ số lẻ = fake
-        it = ds[idx]
-        if it["targets"]["source"] != source:
-            continue
-        cv2.imwrite(str(out / f"{source}_{n:02d}.png"), _to_png(it["image"]))
-        n += 1
-        if n == N_SAMPLES:
-            break
-    if n < N_SAMPLES:
-        raise RuntimeError(f"Chỉ lấy được {n}/{N_SAMPLES} ảnh '{source}' từ arm {arm}")
-    return n
+def _dump_samples(ff_cfg, kind: str, out: Path) -> int:
+    """Lưu N_SAMPLES ảnh `kind` (rep | seam) của ffpp_aug/train để xem bằng mắt."""
+    from compsynth_ff.aug_build import aug_root
+
+    man = pd.read_parquet(aug_root(ff_cfg) / "manifest.parquet")
+    paths = sorted(man[(man.kind == kind) & (man.skipped == "")].path)
+    if len(paths) < N_SAMPLES:
+        raise RuntimeError(f"Chỉ có {len(paths)}/{N_SAMPLES} ảnh '{kind}' trong ffpp_aug")
+    for n, i in enumerate(np.linspace(0, len(paths) - 1, N_SAMPLES).astype(int)):
+        shutil.copyfile(Path(ff_cfg.out_root) / paths[i], out / f"{kind}_{n:02d}.jpg")
+    return N_SAMPLES
 
 
 def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
@@ -59,16 +57,15 @@ def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
     out = Path(cfg.runs_root) / "smoke"
     samples = out / "smoke_samples"
     samples.mkdir(parents=True, exist_ok=True)
-    arm_cfg = cfg
-    _dump_samples(arm_cfg, ff_cfg, "raw+comp", "comp", samples)
-    _dump_samples(arm_cfg, ff_cfg, "raw+sb", "sb", samples)
+    _dump_samples(ff_cfg, "rep", samples)
+    _dump_samples(ff_cfg, "seam", samples)
 
     device = torch.device("cuda")
     torch.manual_seed(cfg.seed)
     model = Detector(cfg).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-    ds = ArmTrainDataset(ff_cfg, "raw+comp", cfg.rho, cfg.seed, cfg.selfblend)
+    ds = ArmTrainDataset(ff_cfg, "raw+rep", cfg.rho, cfg.seed)
     loader = torch.utils.data.DataLoader(ds, batch_size=cfg.batch_size, shuffle=True,
                                          num_workers=cfg.num_workers, drop_last=True)
     model.train()

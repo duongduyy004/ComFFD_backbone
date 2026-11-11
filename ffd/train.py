@@ -174,8 +174,8 @@ def _epoch_batches(n: int, bs: int, seed: int, epoch: int) -> list[list[int]]:
 
 def _video_of(ds, idx: int) -> str:
     """tid của frame gốc ở khe idx (real ở idx chẵn, fake lẻ cùng khe; fake có thể đã bốc lại frame)."""
-    c, k = ds.core, idx // 2
-    return str(c.real_frames[k % len(c.real_frames)][0])
+    k = idx // 2
+    return str(ds.real_frames[k % len(ds.real_frames)][0])
 
 
 def _reconcile_best(path: Path, step: int, best, best_state) -> None:

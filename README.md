@@ -1,7 +1,8 @@
 # ffd — detector CLIP ViT-L/14-336 + LoRA (CompFFD)
 
-So sánh 3 arm huấn luyện (`raw`, `raw+comp`, `raw+sb`) trên FF++ → Celeb-DF v2. Ảnh ghép (`raw+comp`) và self-blend
-(`raw+sb`) dùng chung mask `TrainCore.sample_mask` (spec `../spec_code_augmentation_ghep_artifact_2026-11-11.md`).
+So sánh 2 arm huấn luyện (`raw`, `raw+rep`) trên FF++ → Celeb-DF v2. `raw` dùng `ffpp_raw/train`; `raw+rep` thêm
+`ffpp_aug/train`: ảnh thay thế bộ phận (lớp fake) và real có đường nối (lớp real), ρ = 0.5 cho cả hai lớp
+(spec `../spec_code_augmentation_can_bang_duong_noi_2026-11-11.md`).
 Chế độ `compffd` (E0) đã bỏ ngày 11/11/2026.
 Trạng thái: chưa chạy thử trên GPU/dữ liệu thật.
 
@@ -15,7 +16,7 @@ pip install -e ../preprocessing[gpu] -e .
 
 ## Thứ tự chạy
 
-1. **Preprocessing** (trong `../preprocessing`): extract → select → render val/test. Ra `out_root` có `frames.parquet`, `select/cells.parquet`, manifest.
+1. **Preprocessing** (trong `../preprocessing`): extract → select → realign → export-raw → build-aug. Ra `out_root/ffpp_raw` và `out_root/ffpp_aug`.
 2. **prep-cross cdf2** (GPU, một lần):
    ```bash
    python -m ffd.cli prep-cross --dataset cdf2 --root /data/Celeb_DFv2 --out /data/cross --ffpp-config ../preprocessing/config.yaml
@@ -33,7 +34,7 @@ pip install -e ../preprocessing[gpu] -e .
    **Ghim `model_revision`** (commit HF của `model_name`, `smoke` in ra) trong prereg: `train` không `--pilot` từ chối khi `model_revision` rỗng. `batch_size` phải chẵn (mỗi batch đúng nửa real, nửa fake).
 6. **9 run** = 3 arm × seed 0,1,2:
    ```bash
-   for arm in raw raw+comp raw+sb; do for s in 0 1 2; do
+   for arm in raw raw+rep; do for s in 0 1 2; do
      python -m ffd.cli train --config config.yaml --set prereg=configs/prereg_aug.yaml --set mode=$arm --set seed=$s
    done; done
    ```
@@ -41,11 +42,11 @@ pip install -e ../preprocessing[gpu] -e .
    `run_info.json` ghi `model_revision`, `model_commit` (commit đã resolve), `ffpp_config_hash`, `ffpp_stage_hash` (stage `render` của compsynth_ff); `eval` kiểm lại và từ chối nếu lệch.
 7. **eval** từng run (chỉ chạm test ở bước này):
    ```bash
-   python -m ffd.cli eval --run runs/aug/raw/seed0 --datasets ffpp_test,compsynth_test,cdf2 --cross-root cdf2=/data/cross
+   python -m ffd.cli eval --run runs/aug/raw/seed0 --datasets ffpp_test,cdf2 --cross-root cdf2=/data/cross
    ```
-   `--datasets` chỉ nhận `ffpp_test`, `compsynth_test`, `cdf2`.
+   `--datasets` chỉ nhận `ffpp_test`, `cdf2`.
    **Eval trên máy khác máy train:** thêm `--ffpp-config <config FF++ trên máy này>` và `--prereg <prereg trên máy này>`. Đường dẫn (`data_root`, `out_root`, `splits_dir`) được khác; mọi tham số khác và nội dung prereg phải trùng lúc train, lệch -> từ chối.
-8. **report**: `python -m ffd.cli report --runs-root runs` → `main.md`, `per_cell.md`, `delong.csv`, `summary.parquet`. `main.md` có AUC video và AUC frame; CI bootstrap và DeLong (`delong.csv`, phương sai Obuchowski 1997) đều gom cụm theo `tid` video nguồn (ffpp_test, compsynth_test). Dưới mục CẢNH BÁO: seed/arm thiếu (arm kỳ vọng `raw`, `raw+comp`, `raw+sb` vắng hoàn toàn cũng được nêu), run không prereg, config arm lệch ngoài `mode/seed/runs_root/num_workers`, scores không khớp `best.pt` hiện tại.
+8. **report**: `python -m ffd.cli report --runs-root runs` → `main.md`, `delong.csv`, `summary.parquet`. `main.md` có AUC video và AUC frame; CI bootstrap và DeLong (`delong.csv`, phương sai Obuchowski 1997) đều gom cụm theo `tid` video nguồn (ffpp_test). Dưới mục CẢNH BÁO: seed/arm thiếu (arm kỳ vọng `raw`, `raw+rep` vắng hoàn toàn cũng được nêu), run không prereg, config arm lệch ngoài `mode/seed/runs_root/num_workers`, scores không khớp `best.pt` hiện tại.
 
 ## Thanh tiến trình
 

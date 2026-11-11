@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-EVAL_DATASETS = ("ffpp_test", "compsynth_test", "cdf2")
+EVAL_DATASETS = ("ffpp_test", "cdf2")
 
 
 def _scalar(v: str, yaml):

@@ -12,7 +12,7 @@ from compsynth_ff.io_utils import write_json_atomic
 
 from .config import TrainConfig, config_hash, file_hash
 
-FFPP_STAGE = "render"  # stage cuối của compsynth_ff (gồm cả trường extract + select)
+FFPP_STAGE = "aug"  # stage cuối của compsynth_ff dùng cho train (gồm cả trường extract + select + aug)
 
 
 def run_dir(cfg: TrainConfig) -> Path:
@@ -21,7 +21,7 @@ def run_dir(cfg: TrainConfig) -> Path:
 
 # Kết quả của một lần chạy (cả điểm eval: scores_*.parquet, eval_info.json): --force xóa hết, không resume/force thì từ chối.
 STALE = ("done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json",
-         "scores_ffpp_test.parquet", "scores_compsynth_test.parquet", "scores_cdf2.parquet", "eval_info.json")
+         "scores_ffpp_test.parquet", "scores_cdf2.parquet", "eval_info.json")
 
 
 def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:
@@ -76,7 +76,7 @@ def ffpp_config_hash(ff_cfg) -> str:
 
 
 def ffpp_hashes(cfg: TrainConfig, ff_cfg) -> dict:
-    """Định danh artifact tiền xử lý: `ffpp_config_hash(ff_cfg)` và stage_hash(ff_cfg, "render").
+    """Định danh artifact tiền xử lý: `ffpp_config_hash(ff_cfg)` và stage_hash(ff_cfg, "aug").
     ff_cfg None -> nạp từ cfg.ffpp_config nếu file tồn tại; không có thì cả hai là None."""
     from compsynth_ff.config import load_config, stage_hash
 

@@ -1,12 +1,11 @@
 """Tổng hợp mọi `scores_{dataset}.parquet` dưới runs_root thành bảng báo cáo.
 
-Đầu ra: runs_root/report/{main.md, per_cell.md, delong.csv, summary.parquet}.
+Đầu ra: runs_root/report/{main.md, delong.csv, summary.parquet}.
 Quy tắc trung thực:
 - Điểm mức video tính TRƯỚC (`stats.video_scores`: trung bình logit theo video_id), mọi AUC/CI/DeLong dùng bảng video.
   Video có cờ no_usable_frame/decode_error (logit 0.0) vẫn nằm trong AUC và được đếm riêng trong chú thích.
-- AUC video tính trên đơn vị bảng video (compsynth_test: đơn vị ô "{tid}|region|method"). CI: `bootstrap_ci`
-  n=1000, alpha=0.05, seed 0, resample theo CỤM video nguồn `tid` cho ffpp_test ("{tid}_{src}") và compsynth_test
-  ("{tid}|..."), các video cùng tid (real + mọi fake/ô của nó) cùng vào hoặc cùng ra; dataset khác (cdf2) cụm = video.
+- AUC video tính trên bảng video. CI: `bootstrap_ci` n=1000, alpha=0.05, seed 0, resample theo CỤM video nguồn
+  `tid` cho ffpp_test ("{tid}_{src}"), các video cùng tid (real + mọi fake) cùng vào hoặc cùng ra; cdf2: cụm = video.
 - AUC frame: trên mọi dòng frame thật (bỏ dòng cờ frame_idx=-1), báo cạnh AUC video trong main.md.
 - DeLong ghép cặp, gom cụm theo cùng cụm với CI (`stats.delong_paired_clustered`, Obuchowski 1997): các arm
   so từng cặp trong CÙNG dataset và CÙNG seed, qua
@@ -17,8 +16,6 @@ Quy tắc trung thực:
   đầu main.md (mục CẢNH BÁO) và đánh dấu ô bị ảnh hưởng. CI trong main.md luôn lấy từ seed 0 (thiếu -> "CI: thiếu seed 0").
 - Cùng (dataset, mode, split, seed) xuất hiện ở hai file scores -> ValueError; video có nhãn không nhất quán -> ValueError.
 - run_info["config"] của các run arm (aug/) chỉ được khác nhau ở ARM_FREE_KEYS; khóa khác lệch -> liệt kê dưới CẢNH BÁO.
-- per_cell: chỉ compsynth_test; AUC của từng ô fake (video của ô vs mọi video real), real báo tỉ lệ chấm "fake" (score > 0);
-  thêm bảng gộp theo method và theo số vùng k' (spec augmentation 11/11).
 - Ô main.md: "AUC video trung bình các seed ± sd (ddof=1) [CI seed 0]"; một seed -> sd "n/a".
 - Mỗi scores_*.parquet phải có best_step bằng step của best.pt HIỆN TẠI trong cùng thư mục run; lệch, thiếu best.pt
   hoặc nhiều giá trị -> liệt kê dưới CẢNH BÁO (điểm cũ không còn khớp checkpoint).
@@ -40,14 +37,12 @@ REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", 
             "best_step"]
 N_BOOT, ALPHA = 1000, 0.05
 REQUIRED_SEEDS = (0, 1, 2)
-EXPECTED_ARMS = ("raw", "raw+comp", "raw+sb")
-TID_CLUSTERED = ("ffpp_test", "compsynth_test")
+EXPECTED_ARMS = ("raw", "raw+rep")
+TID_CLUSTERED = ("ffpp_test",)
 
 
 def _cluster(dataset: str, video_id: str) -> str:
-    """Cụm bootstrap: tid video nguồn cho ffpp_test ("{tid}_{src}") và compsynth_test ("{tid}|..."); khác -> video_id."""
-    if dataset == "compsynth_test":
-        return video_id.split("|", 1)[0]
+    """Cụm bootstrap: tid video nguồn cho ffpp_test ("{tid}_{src}"); dataset khác -> video_id."""
     if dataset == "ffpp_test":
         return video_id.rsplit("_", 1)[0]
     return video_id
@@ -112,8 +107,6 @@ def _load(runs_root: Path):
             seen[key] = p
             tables[key] = _video_table(g, key)
             fauc[key] = _frame_auc(g)
-            if key[0] == "compsynth_test":
-                frames[key] = g[g.flag == ""]
     return tables, fauc, stale, frames
 
 
@@ -253,8 +246,7 @@ def build_report(runs_root) -> Path:
         md += [f"- {k}: " + "; ".join(f"{r}={v}" for r, v in sorted(vals.items())) for k, vals in cfg_diffs] + [""]
     md += table(arm_names)
     md += ["", "## Chú thích", "",
-           "- AUC video: điểm video = trung bình logit các frame; compsynth_test tính trên đơn vị ô "
-           "(\"{tid}|method\", \"{tid}|real\"); bảng theo vùng/k' ở per_cell.md tính mức frame.",
+           "- AUC video: điểm video = trung bình logit các frame.",
            f"- CI: bootstrap percentile seed 0, n={N_BOOT}, resample theo CỤM video nguồn tid cho "
            f"{', '.join(TID_CLUSTERED)} (real và mọi fake/ô của cùng tid cùng vào/ra); dataset khác: cụm = video.",
            "- DeLong (delong.csv): ghép cặp trên video chung, GOM CỤM theo cùng cụm với CI (tid cho "
@@ -272,66 +264,8 @@ def build_report(runs_root) -> Path:
     md += ["", f"Tổng n_dropped khi ghép cặp: {int(delong.n_dropped.sum()) if len(delong) else 0} (chi tiết: delong.csv)."]
     main_md = "\n".join(md) + "\n"
 
-    # ---- per_cell.md (compsynth_test)
-    pc = []
-    for (ds, mode, split, seed), v in sorted(frames.items()):  # mức FRAME: vùng ghép đổi theo frame trong một video
-        v = v.rename(columns={"logit": "score"})
-        real = v[v.cell == "real"]
-        for c, g in v.groupby("cell"):
-            if c == "real":
-                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g), auc=np.nan,
-                               frac_pos=float((g.score > 0).mean())))
-            elif (g.label == 1).all():
-                both = pd.concat([g, real])
-                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=c, n=len(g),
-                               auc=auc(both.label, both.score) if both.label.nunique() == 2 else np.nan,
-                               frac_pos=float((g.score > 0).mean())))
-        fk = v[(v.cell != "real") & (v.label == 1)]
-        if len(fk):  # gộp theo method và theo số vùng k' (spec augmentation 11/11 §5)
-            parts = fk.cell.str.split("|", n=1)
-            groups = {f"method:{m}": fk[parts.str[1] == m] for m in sorted(set(parts.str[1]))}
-            kk = parts.str[0].str.count(r"\+") + 1
-            groups.update({f"k:{k}": fk[kk == k] for k in sorted(set(kk))})
-            for name, g in groups.items():
-                both = pd.concat([g, real])
-                pc.append(dict(arm=_arm_label(mode, split), seed=int(seed), cell=name, n=len(g),
-                               auc=auc(both.label, both.score) if both.label.nunique() == 2 else np.nan,
-                               frac_pos=float((g.score > 0).mean())))
-    pcd = pd.DataFrame(pc, columns=["arm", "seed", "cell", "n", "auc", "frac_pos"])
-    pm = ["# AUC CompSynth-FF test theo method, số vùng k' và tổ hợp vùng (mức frame)", "",
-          "Mọi bảng dưới đây tính ở mức frame (frame ảnh ghép của nhóm vs mọi frame real), vì vùng ghép bốc theo "
-          "từng frame; cột n = số frame.", ""]
-    if pcd.empty:
-        pm.append("Không có run nào được chấm trên compsynth_test.")
-    else:
-        names = sorted(pcd.arm.unique())
-
-        def pivot(cells, col, title, head="cell", strip=""):
-            out_ = [title, "", f"| {head} | n_frame | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
-            for c in cells:
-                parts, nvid = [], int(pcd[pcd.cell == c].groupby("arm").n.max().max())
-                for a in names:
-                    x = pcd[(pcd.cell == c) & (pcd.arm == a)][col]
-                    parts.append("–" if x.empty else f"{_fmt(x.mean())} ± {_fmt(x.std(ddof=1) if len(x) > 1 else float('nan'))}")
-                out_.append(f"| {c[len(strip):]} | {nvid} | " + " | ".join(parts) + " |")
-            return out_
-
-        allc = set(pcd.cell)
-        by_m = sorted(c for c in allc if c.startswith("method:"))
-        by_k = sorted((c for c in allc if c.startswith("k:")), key=lambda c: int(c[2:]))
-        fake_cells = sorted(c for c in allc if c != "real" and c not in by_m and c not in by_k)
-        pm += pivot(by_m, "auc", "## AUC theo method (frame ảnh ghép của method vs mọi frame real), trung bình seed ± sd",
-                    "method", "method:") + [""]
-        pm += pivot(by_k, "auc", "## AUC theo số vùng k' (frame ảnh ghép k' vùng vs mọi frame real), trung bình seed ± sd",
-                    "k'", "k:") + [""]
-        pm += pivot(fake_cells, "auc", "## AUC theo tổ hợp vùng|method, trung bình seed ± sd") + [""]
-        neg = [c for c in ("real",) if c in allc]
-        pm += pivot(neg, "frac_pos", "## Nhãn 0: tỉ lệ frame bị chấm fake (score > 0), trung bình seed ± sd")
-    per_cell_md = "\n".join(pm) + "\n"
-
     # ---- ghi
     atomic_write_bytes(out / "main.md", main_md.encode("utf-8"))
-    atomic_write_bytes(out / "per_cell.md", per_cell_md.encode("utf-8"))
     atomic_write_bytes(out / "delong.csv", delong.to_csv(index=False).encode("utf-8"))
     write_parquet_atomic(summ.drop(columns="arm"), out / "summary.parquet")
     return out

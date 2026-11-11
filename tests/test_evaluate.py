@@ -83,7 +83,7 @@ def test_eval_guard_blocks_train_val_sources():
     for w in ("ffpp_train", "ffpp_val", "compsynth_val", "whatever"):
         with pytest.raises(LeakageError):
             allow_read("eval", w)
-    for w in ("ffpp_test", "compsynth_test", "cdf2"):
+    for w in ("ffpp_test", "cdf2"):
         allow_read("eval", w)
 
 
@@ -102,26 +102,6 @@ def test_eval_ffpp_test_all_frames(trained_tiny_run, ffpp_synth, vc):
     assert df.logit.notna().all() and set(df["mode"]) == {"raw"} and set(df.seed) == {0}
     assert set(df.video_id) == {core[i]["targets"]["video_id"] for i in range(len(core))}
     assert (trained_tiny_run / "scores_ffpp_test.parquet").exists() and not list(trained_tiny_run.glob("*.tmp*"))
-
-
-def test_eval_compsynth_test_cells(trained_tiny_run, ffpp_synth, vc):
-    from compsynth_ff.dataset import EvalCore
-
-    df = ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)
-    core = EvalCore(ffpp_synth, "test")
-    assert len(df) == len(core)
-    kinds = core.man.kind.tolist()
-    assert (df.cell[[k == "real" for k in kinds]] == "real").all()
-    fk = df[[k == "fake" for k in kinds]]
-    assert len(fk) and (fk.cell.str.count(r"\|") == 1).all() and (fk.label == 1).all()
-    assert (df[[k != "fake" for k in kinds]].label == 0).all()
-    assert fk.cell.str.fullmatch(r"(eyes|nose|mouth|skin)(\+(eyes|nose|mouth|skin))*\|(DF|F2F|FS|NT|FSh)").all()
-    # Final I3: đơn vị video của ảnh ghép = (tid, method); vùng bốc theo từng frame nằm ở cell
-    assert (fk.video_id == [f"{t}|{m}" for t, m in zip(core.man.tid[[k == "fake" for k in kinds]],
-                                                       core.man.method[[k == "fake" for k in kinds]])]).all()
-    assert df[df.cell == "real"].video_id.str.endswith("|real").all()
-    df2 = ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)  # cùng ckpt thì cùng điểm
-    assert df.logit.to_numpy() == pytest.approx(df2.logit.to_numpy())
 
 
 def test_no_face_video_kept(trained_tiny_run, synth_cross, ffpp_synth, vc):
@@ -159,28 +139,23 @@ def test_ffpp_test_video_without_kept_frames_flagged(trained_tiny_run, ffpp_synt
 
 
 def test_ffpp_test_unexpected_video_rejected(trained_tiny_run, ffpp_synth, vc, monkeypatch):
-    import dataclasses
+    import compsynth_ff.dataset as D
 
-    import compsynth_ff.select_cells as SC
-
-    cfg = dataclasses.replace(ffpp_synth, data_root=Path("khong_ton_tai_MINH_HOA"))
-    orig = SC.load_frames
-    # tập kỳ vọng (SC.load_frames) thiếu một video mà FFppRawCore (dataset.load_frames) vẫn chấm
-    monkeypatch.setattr(SC, "load_frames", lambda c: (lambda fr: fr[fr.tid != fr[fr.subset == "test"].tid.iloc[0]])(orig(c)))
+    orig = D.expected_videos
+    # tập kỳ vọng thiếu một video mà FFppRawCore vẫn chấm
+    monkeypatch.setattr(D, "expected_videos", lambda c, sub: dict(list(orig(c, sub).items())[1:]))
     with pytest.raises(ValueError, match="không thuộc tập test"):
-        ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
+        ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
 
-
-def test_reevaluating_one_dataset_keeps_other_files(trained_tiny_run, ffpp_synth, vc):
-    ev(trained_tiny_run, ["ffpp_test", "compsynth_test"], vc, ffpp_synth)
+def test_reevaluating_one_dataset_keeps_other_files(trained_tiny_run, ffpp_synth, synth_cross, vc):
+    ev(trained_tiny_run, ["ffpp_test", "cdf2"], vc, ffpp_synth, {"cdf2": synth_cross})
     a = trained_tiny_run / "scores_ffpp_test.parquet"
-    b = trained_tiny_run / "scores_compsynth_test.parquet"
+    b = trained_tiny_run / "scores_cdf2.parquet"
     assert a.exists() and b.exists()
     before = b.stat().st_mtime_ns, pd.read_parquet(b).logit.sum()
     ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
     assert (b.stat().st_mtime_ns, pd.read_parquet(b).logit.sum()) == before  # file dataset khác không bị đụng
     assert not (trained_tiny_run / "scores.parquet").exists()
-
 
 def test_eval_refuses_rebuilt_config_hash_mismatch(trained_tiny_run, tmp_path):
     run = tmp_path / "r"
@@ -192,15 +167,7 @@ def test_eval_refuses_rebuilt_config_hash_mismatch(trained_tiny_run, tmp_path):
         evaluate_run(run, ["ffpp_test"], {})
 
 
-def test_compsynth_unknown_kind_keyerror(trained_tiny_run, ffpp_synth, vc, monkeypatch):
-    from compsynth_ff.dataset import L0_CODE
-
-    monkeypatch.delitem(L0_CODE, "fake")
-    with pytest.raises(KeyError):
-        ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)
-
-
-def test_ffpp_expected_set_without_data_root(trained_tiny_run, ffpp_synth, vc, monkeypatch):
+def test_ffpp_expected_set_from_manifest_without_data_root(trained_tiny_run, ffpp_synth, vc):
     import dataclasses
     import json as _j
 
@@ -208,36 +175,7 @@ def test_ffpp_expected_set_without_data_root(trained_tiny_run, ffpp_synth, vc, m
     df = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
     assert (df.flag == "").all() and len(df) > 0
     info = _j.loads((trained_tiny_run / "eval_info.json").read_text(encoding="utf-8"))
-    assert info["ffpp_test"]["expected_source"] == "artifacts_only"
-    ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-    info = _j.loads((trained_tiny_run / "eval_info.json").read_text(encoding="utf-8"))
-    assert info["ffpp_test"]["expected_source"] == "artifacts+data_root"
-
-
-def test_ffpp_video_all_keep_false_in_frames_flagged(trained_tiny_run, ffpp_synth, vc, monkeypatch):
-    import dataclasses
-
-    import compsynth_ff.select_cells as SC
-
-    cfg = dataclasses.replace(ffpp_synth, data_root=Path("khong_ton_tai_MINH_HOA"))  # chỉ dùng artifact
-    full = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
-    victim = sorted(full.video_id.unique())[0]
-    tid, src = victim.rsplit("_", 1)
-    orig = SC.load_frames
-
-    def patched(c):
-        fr = orig(c).copy()
-        fr.loc[(fr.tid == tid) & (fr.src == src), "keep"] = False  # còn trong frames nhưng không frame nào keep
-        return fr
-
-    monkeypatch.setattr(SC, "load_frames", patched)
-    import compsynth_ff.dataset as D
-    monkeypatch.setattr(D, "load_frames", patched)
-    df = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
-    row = df[df.flag == "no_usable_frame"]
-    assert len(row) == 1 and row.video_id.iloc[0] == victim and row.logit.iloc[0] == 0.0
-    assert set(df.video_id) == set(full.video_id)
-
+    assert info["ffpp_test"]["expected_source"] == "ffpp_raw_manifest"
 
 def test_run_info_records_model_and_ffpp_provenance(trained_tiny_run, ffpp_synth):
     """I2/I3: run_info ghi model_revision (None khi chưa ghim), model_commit ("local" với vision_config),
@@ -250,7 +188,7 @@ def test_run_info_records_model_and_ffpp_provenance(trained_tiny_run, ffpp_synth
     info = json.loads((trained_tiny_run / "run_info.json").read_text(encoding="utf-8"))
     assert info["model_revision"] is None and info["model_commit"] == "local"
     assert info["ffpp_config_hash"] == ffpp_config_hash(ffpp_synth)
-    assert info["ffpp_stage_hash"] == stage_hash(ffpp_synth, "render")
+    assert info["ffpp_stage_hash"] == stage_hash(ffpp_synth, "aug")
 
 
 def test_eval_refuses_changed_ffpp_artifacts(trained_tiny_run, ffpp_synth, vc, tmp_path):
@@ -308,3 +246,26 @@ def test_eval_accepts_moved_paths(trained_tiny_run, ffpp_synth, vc, tmp_path):
     pre_new.write_text("rho: 0.6\n", encoding="utf-8")  # nội dung đổi -> vẫn từ chối
     with pytest.raises(ValueError, match="prereg"):
         evaluate_run(run, ["ffpp_test"], {}, ff_cfg=moved, prereg=pre_new, vision_config=vc, device="cpu")
+
+
+def test_eval_rejects_compsynth(trained_tiny_run, ffpp_synth, vc):
+    with pytest.raises(Exception):
+        ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)
+
+
+def test_ffpp_test_expected_from_manifest(trained_tiny_run, ffpp_synth, vc, tmp_path):
+    """Video test có mọi frame fake keep=False trong ffpp_raw/manifest vẫn có dòng điểm 0 no_usable_frame."""
+    import dataclasses
+    import shutil
+
+    out = tmp_path / "o"
+    shutil.copytree(ffpp_synth.out_root, out)
+    cfg = dataclasses.replace(ffpp_synth, out_root=out)
+    mp = out / "ffpp_raw" / "manifest.parquet"
+    man = pd.read_parquet(mp)
+    vid = sorted(man[(man.split == "test") & (man.method == "DF") & man.keep].video_id)[0]
+    man.loc[man.video_id == vid, ["keep", "drop_reason"]] = [False, "no_face"]
+    man.to_parquet(mp, index=False)
+    df = ev(trained_tiny_run, ["ffpp_test"], vc, cfg)
+    row = df[df.video_id == vid]
+    assert len(row) == 1 and row.flag.iloc[0] == "no_usable_frame" and row.logit.iloc[0] == 0.0

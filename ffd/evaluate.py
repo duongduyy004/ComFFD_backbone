@@ -2,20 +2,18 @@
 
 Cột: run, mode, seed, split, dataset, video_id, frame_idx, label, logit, cell, flag, best_step (step của best.pt đã chấm).
 Quy ước:
-- `datasets` ⊆ {ffpp_test, compsynth_test, cdf2}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
+- `datasets` ⊆ {ffpp_test, cdf2}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
 - Chỉ nạp `best.pt` (qua `Detector.load_trainable`); cần `done.flag`; nếu run có prereg thì hash trong
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
 - Artifact tiền xử lý phải trùng lúc train: `ffpp_config_hash` (Config FF++ đã parse, bỏ đường dẫn) và `ffpp_stage_hash`
-  (stage_hash(ff_cfg, "render")) tính lại từ ff_cfg dùng khi eval; lệch -> ValueError. Commit HF của trunk dựng lại
+  (stage_hash(ff_cfg, "aug")) tính lại từ ff_cfg dùng khi eval; lệch -> ValueError. Commit HF của trunk dựng lại
   phải bằng `model_commit` trong run_info.
 - Detector dựng lại từ `run_info.json["config"]` (cấu hình đầy đủ do `rundir.write_run_info` ghi; run cũ không có
   khóa này -> ValueError, không đoán).
-- ffpp_test: FFppRawCore(test) (tập video kỳ vọng từ frames.parquet subset test, hợp thêm discover_targets nếu data_root tồn tại;
-  không có data_root -> expected_source="artifacts_only" ghi vào run/eval_info.json), video_id = "{tid}_{src}", cell = "". Video kỳ vọng (discover_targets, subset test) không còn frame keep
-  -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; video chấm được mà không thuộc tập kỳ vọng -> ValueError.
-- compsynth_test: EvalCore(test), toàn bộ dòng manifest; video_id = "{tid}|real" | "{tid}|{method}" (một video ghép
-  = mọi frame của (tid, method); vùng bốc theo từng frame); cell = "{region}|{method}" (fake, region = các vùng nối "+")
-  | "real"; label = L0. Bảng theo cell/method/k' của report tính ở mức frame.
+- ffpp_test: FFppRawCore(test) đọc ffpp_raw/test; tập video kỳ vọng = `expected_videos(cfg, "test")` từ
+  ffpp_raw/manifest.parquet (expected_source="ffpp_raw_manifest" ghi vào run/eval_info.json), video_id = "{tid}_{src}",
+  cell = "". Video kỳ vọng không còn frame keep -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame";
+  video chấm được mà không thuộc tập kỳ vọng -> ValueError.
 - cdf2: manifest của `prep_cross` (cross_roots[name] là thư mục chứa manifest.parquet + crops/, hoặc cha của nó
   chứa thư mục `name/`). Chỉ chấm frame keep=True. Video chỉ có dòng frame_idx == -1 & drop_reason == "no_usable_frame"
   -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; drop_reason == "decode_error" -> flag="decode_error"
@@ -42,7 +40,7 @@ from .model import Detector
 from .rundir import ffpp_hashes
 from .train import _autocast
 
-DATASETS = ("ffpp_test", "compsynth_test", "cdf2")
+DATASETS = ("ffpp_test", "cdf2")
 COLUMNS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
            "best_step"]
 
@@ -116,10 +114,9 @@ def _frame(df: pd.DataFrame, **const) -> pd.DataFrame:
 
 
 def _ffpp_test(model, ff_cfg, bs, device):
-    """Trả (df, expected_source)."""
-    from compsynth_ff.dataset import FFppRawCore
-    from compsynth_ff.pairs import discover_targets
-    from compsynth_ff.select_cells import load_frames
+    """Trả (df, expected_source). Tập video kỳ vọng lấy từ ffpp_raw/manifest.parquet (gồm video không còn frame
+    keep); video kỳ vọng không có frame -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"."""
+    from compsynth_ff.dataset import FFppRawCore, expected_videos
 
     allow_read("eval", "ffpp_test")
     core = FFppRawCore(ff_cfg, "test")
@@ -127,20 +124,7 @@ def _ffpp_test(model, ff_cfg, bs, device):
     lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval ffpp_test")
     df = pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
                        "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
-    # Đủ video: tập kỳ vọng dựng từ artifact tiền xử lý (frames.parquet, KHÔNG lọc keep) nên gồm cả video không còn
-    # frame keep; nếu data_root còn tồn tại thì hợp thêm discover_targets (bắt target extract hỏng hoàn toàn).
-    fr = load_frames(ff_cfg)
-    fr = fr[(fr.subset == "test") & fr.src.isin(("real",) + tuple(ff_cfg.methods))]
-    expected = {f"{t}_{s_}": (0 if s_ == "real" else 1) for t, s_ in fr[["tid", "src"]].drop_duplicates().itertuples(index=False)}
-    if Path(ff_cfg.data_root).exists():
-        source = "artifacts+data_root"
-        for t in discover_targets(ff_cfg):
-            if t.subset == "test":
-                expected[f"{t.tid}_real"] = 0
-                for m in t.fakes:
-                    expected[f"{t.tid}_{m}"] = 1
-    else:
-        source = "artifacts_only"
+    expected = expected_videos(ff_cfg, "test")
     extra = set(df.video_id) - set(expected)
     if extra:
         raise ValueError(f"{len(extra)} video được chấm không thuộc tập test kỳ vọng (ví dụ {sorted(extra)[0]!r})")
@@ -148,27 +132,7 @@ def _ffpp_test(model, ff_cfg, bs, device):
     if miss:
         df = pd.concat([df, pd.DataFrame({"video_id": miss, "frame_idx": -1, "label": [expected[v] for v in miss],
                                           "logit": 0.0, "cell": "", "flag": "no_usable_frame"})], ignore_index=True)
-    return df, source
-
-
-def _compsynth_test(model, ff_cfg, bs, device) -> pd.DataFrame:
-    from compsynth_ff.dataset import L0_CODE, EvalCore
-
-    allow_read("eval", "compsynth_test")
-    core = EvalCore(ff_cfg, "test")
-    vids, cells, labels, fidx = [], [], [], []
-    for i in range(len(core)):
-        m = core.meta(i)
-        k, tid, r, me = m["kind"], m["tid"], m["region"], m["method"]
-        if k == "real":
-            v, c = f"{tid}|real", "real"
-        else:
-            v, c = f"{tid}|{me}", f"{r}|{me}"
-        lab = L0_CODE[k]  # KeyError nếu kind lạ
-        vids.append(v); cells.append(c); labels.append(lab); fidx.append(m["frame_idx"])  # noqa: E702
-    lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval compsynth_test")
-    return pd.DataFrame({"video_id": vids, "frame_idx": fidx, "label": labels, "logit": lg,
-                         "cell": cells, "flag": ""})
+    return df, "ffpp_raw_manifest"
 
 
 def _cross(model, name, root, bs, device) -> pd.DataFrame:
@@ -226,8 +190,6 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, pr
         if ds == "ffpp_test":
             df, src = _ffpp_test(model, ff_cfg, batch_size, device)
             eval_info["ffpp_test"] = {"expected_source": src}
-        elif ds == "compsynth_test":
-            df = _compsynth_test(model, ff_cfg, batch_size, device)
         else:
             df = _cross(model, ds, cross_roots[ds], batch_size, device)
         frames.append(_frame(df, dataset=ds))

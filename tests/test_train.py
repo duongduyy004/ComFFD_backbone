@@ -7,7 +7,6 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from compsynth_ff.dataset import TrainCore  # noqa: E402
 from ffd import train as T  # noqa: E402
 from ffd.config import TrainConfig  # noqa: E402
 from ffd.guards import LeakageError, allow_read, val_set_for  # noqa: E402
@@ -41,22 +40,15 @@ def test_tie_break_by_bce():
 
 
 def test_train_cannot_read_test():
-    for w in ("ffpp_test", "compsynth_test", "cross"):
+    for w in ("ffpp_test", "compsynth_test", "cross", "compsynth_train", "compsynth_val"):
         with pytest.raises(LeakageError):
             allow_read("train", w)
     for w in ("ffpp_test_raw", "ffpp_val_raw", "whatever"):  # chỉ các nguồn train/val đã biết
         with pytest.raises(LeakageError):
             allow_read("train", w)
-    for w in ("ffpp_train", "ffpp_val", "compsynth_train", "compsynth_val"):
+    for w in ("ffpp_train", "ffpp_val"):
         allow_read("train", w)
     allow_read("eval", "ffpp_test")
-
-
-def write_split(ffpp, name, seen, unseen=()):
-    sp = Path(ffpp.out_root) / "splits" / f"{name}.json"
-    sp.parent.mkdir(parents=True, exist_ok=True)
-    sp.write_text(json.dumps({"seen": [list(c) for c in seen], "unseen": [list(c) for c in unseen]}))
-    return sp
 
 
 def test_val_items_reject_test_subset(ffpp_synth, tmp_path):
@@ -76,7 +68,7 @@ def test_val_metrics_single_class_or_nan_raises():
 
 
 def test_val_set_for():
-    assert val_set_for(mkcfg(mode="raw+comp")) == "ffpp_val_raw"
+    assert val_set_for(mkcfg(mode="raw+rep")) == "ffpp_val_raw"
 
 
 def test_missing_cuda_raises(ffpp_synth, tiny, tmp_path, monkeypatch):
@@ -86,7 +78,7 @@ def test_missing_cuda_raises(ffpp_synth, tiny, tmp_path, monkeypatch):
 
 
 def test_train_writes_artifacts(ffpp_synth, tiny, tmp_path):
-    d = run(mkcfg(mode="raw+comp", runs_root=tmp_path), ffpp_synth, tiny)
+    d = run(mkcfg(mode="raw+rep", runs_root=tmp_path), ffpp_synth, tiny)
     assert {"best.pt", "last.pt", "done.flag", "run_info.json", "val_curve.jsonl"} <= set(os.listdir(d))
     vc = read_jsonl(d / "val_curve.jsonl")
     assert [r["step"] for r in vc] == [4, 8, 12]
@@ -234,7 +226,7 @@ def test_dataloader_spawn_worker_iterates(ffpp_synth):
 
     from ffd.data.arms import ArmTrainDataset
 
-    ds = ArmTrainDataset(ffpp_synth, "raw+comp", 0.5, 0)
+    ds = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, 0)
     loader = torch.utils.data.DataLoader(
         ds, batch_sampler=T._epoch_batches(len(ds), 4, 0, 0)[:1], num_workers=1, persistent_workers=False,
         worker_init_fn=functools.partial(T._seed_worker, seed=0), multiprocessing_context=mp.get_context("spawn"))
@@ -261,7 +253,7 @@ def test_epoch_batches_balanced(ffpp_synth):
         assert len({i for b in bb for i in b}) == len(bb) * bs  # không lặp trong epoch
     with pytest.raises(ValueError, match="chẵn"):
         T._epoch_batches(40, 5, 0, 0)
-    ds = ArmTrainDataset(ffpp_synth, "raw+sb", 0.5, 0)
+    ds = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, 0)
     for b in T._epoch_batches(len(ds), 4, 0, 0)[:3]:
         assert sum(ds[i]["targets"]["L0"] == 0 for i in b) == 2
 

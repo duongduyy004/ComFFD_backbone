@@ -37,8 +37,8 @@ def test_cli_set_locked_key_rejected(tmp_path):
 def test_parse_set():
     from ffd.cli import parse_sets
 
-    assert parse_sets(["lr=1e-4", "seed=2", "mode=raw+sb", "num_workers=0"]) == \
-        {"lr": 1e-4, "seed": 2, "mode": "raw+sb", "num_workers": 0}
+    assert parse_sets(["lr=1e-4", "seed=2", "mode=raw+rep", "num_workers=0"]) == \
+        {"lr": 1e-4, "seed": 2, "mode": "raw+rep", "num_workers": 0}
     with pytest.raises(ValueError):
         parse_sets(["noequals"])
 

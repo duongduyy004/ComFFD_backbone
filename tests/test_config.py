@@ -30,6 +30,12 @@ def test_defaults_and_types(tmp_path):
     assert isinstance(c.runs_root, Path) and c.prereg is None and not hasattr(c, "split")
 
 
+def test_old_modes_rejected(tmp_path):
+    for m in ("raw+comp", "raw+sb"):
+        with pytest.raises(ValueError):
+            load_train_config(write_yaml(tmp_path, mode=m))
+
+
 def test_compffd_mode_rejected(tmp_path):
     with pytest.raises(ValueError):  # spec augmentation 11/11: bỏ chế độ compffd (E0)
         load_train_config(write_yaml(tmp_path, mode="compffd"))
