@@ -39,18 +39,22 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(scope="session")
 def ffpp_synth(synth_root, tmp_path_factory):
-    """Config đã chạy extract -> select -> render val/test trên FF++ tổng hợp (MINH HỌA)."""
+    """Config đã chạy extract -> select -> realign -> export-raw -> build-aug trên FF++ tổng hợp (MINH HỌA)."""
     from synth import FakeDetector, FakeParser
+    from compsynth_ff.aug_build import build_aug
     from compsynth_ff.extract import run_extract
     from compsynth_ff.pairs import discover_targets
-    from compsynth_ff.render_eval import render_subset
+    from compsynth_ff.raw_export import export_raw
+    from compsynth_ff.realign import run_realign
     from compsynth_ff.select_cells import run_select
 
     cfg = make_cfg(synth_root, tmp_path_factory.mktemp("ds"))
-    run_extract(cfg, discover_targets(cfg), FakeDetector, FakeParser, reencoder=fake_reenc)
+    ts = discover_targets(cfg)
+    run_extract(cfg, ts, FakeDetector, FakeParser, reencoder=fake_reenc)
     run_select(cfg)
-    render_subset(cfg, "val")
-    render_subset(cfg, "test")
+    run_realign(cfg, ts, FakeDetector)
+    export_raw(cfg, ts, FakeDetector)
+    build_aug(cfg, ts, FakeParser)
     return cfg
 
 

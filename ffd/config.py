@@ -14,7 +14,7 @@ from typing import Literal
 import yaml
 from compsynth_ff.composite import DEFAULT_T
 
-MODES = ("raw", "raw+comp", "raw+sb")  # compffd (E0) bỏ theo spec 11/11
+MODES = ("raw", "raw+rep")  # spec augmentation can_bang_duong_noi §4
 # Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI. File prereg chỉ được chứa các khóa này.
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
                "batch_size", "grad_accum", "selfblend", "model_name", "model_revision", "head", "tap_layers",
@@ -35,7 +35,7 @@ def _is_locked(k: str) -> bool:
 class TrainConfig:
     ffpp_config: Path
     runs_root: Path
-    mode: Literal["raw", "raw+comp", "raw+sb"]
+    mode: Literal["raw", "raw+rep"]
     seed: int
     total_steps: int
     eval_every: int

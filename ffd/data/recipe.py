@@ -1,64 +1,45 @@
-"""Bộ bốc recipe cho một mục fake của arm. Thuần numpy.
+"""Bộ bốc nguồn và method cho một mục của arm. Thuần numpy.
 
-Spec augmentation 11/11 §5: recipe chỉ còn (source, method). Vùng và mask do compsynth_ff.TrainCore.sample_mask
-bốc SAU recipe, dùng chung cho comp và sb, nên hai arm có cùng phân phối mask; chỉ nội dung vùng ghép khác nhau.
+Spec augmentation can_bang_duong_noi §4: arm `raw` (ảnh gốc) và `raw+rep`:
+- lớp fake: với xác suất ρ dùng ảnh thay thế (rep), ngược lại fake gốc;
+- lớp real: với xác suất ρ dùng real có đường nối (seam), ngược lại real gốc.
 
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
-from typing import Literal, NamedTuple
-
 import numpy as np
 
-ARMS = ("raw", "raw+comp", "raw+sb")
+ARMS = ("raw", "raw+rep")
 
 
-class Recipe(NamedTuple):
-    source: Literal["raw", "comp", "sb"]
-    method: str
+def _check(arm: str) -> None:
+    if arm not in ARMS:
+        raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
 
 
 def draw_source(rng: np.random.Generator, arm: str, rho: float) -> str:
-    """Bốc nguồn MỘT lần cho mỗi mục (trước mọi resample frame): raw, hoặc comp/sb với xác suất rho."""
-    if arm not in ARMS:
-        raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
-    if arm != "raw" and rng.random() < rho:
-        return "comp" if arm == "raw+comp" else "sb"
-    return "raw"
+    """Nguồn của mục fake: "rep" với xác suất rho (chỉ raw+rep), ngược lại "raw"."""
+    _check(arm)
+    return "rep" if arm == "raw+rep" and rng.random() < rho else "raw"
+
+
+def draw_real_source(rng: np.random.Generator, arm: str, rho: float) -> str:
+    """Nguồn của mục real: "seam" với xác suất rho (chỉ raw+rep), ngược lại "raw"."""
+    _check(arm)
+    return "seam" if arm == "raw+rep" and rng.random() < rho else "raw"
 
 
 def draw_method(rng: np.random.Generator, methods: tuple) -> str:
     return str(methods[int(rng.integers(0, len(methods)))])
 
 
-def sample_recipe(rng: np.random.Generator, arm: str, rho: float, methods: tuple, source: str | None = None,
-                  method: str | None = None) -> Recipe | None:
-    """Recipe cho MỘT frame. `source`/`method` cho sẵn thì giữ nguyên. Method bốc đều trên `methods` của frame.
-    Trả None nếu frame không có method dùng được hoặc method cho sẵn không có trên frame (caller đổi FRAME)."""
-    if source is None:
-        source = draw_source(rng, arm, rho)
-    if method is None:
-        if not methods:
-            return None
-        method = draw_method(rng, methods)
-    if method not in methods:
-        return None
-    return Recipe(source, method)
-
-
-def sample_item(rng: np.random.Generator, arm: str, rho: float, n_frames: int, methods_fn, k: int,
-                max_tries: int = 50) -> tuple:
-    """(frame_index, Recipe). Nguồn bốc một lần; method bốc ở frame đầu có method; chỉ FRAME được resample.
-    methods_fn(i) -> tuple method dùng được ở frame i. Quá max_tries thì RuntimeError."""
-    source = draw_source(rng, arm, rho)
-    m = None
+def sample_item(rng: np.random.Generator, n_frames: int, methods_fn, k: int, max_tries: int = 50) -> tuple:
+    """(frame_index, method): method đều trên method có ảnh ở frame k; frame không có method nào thì bốc frame khác.
+    methods_fn(i) -> tuple method. Quá max_tries thì RuntimeError."""
     for _ in range(max_tries):
         methods = tuple(methods_fn(k))
-        if m is None and methods:
-            m = draw_method(rng, methods)
-        rec = sample_recipe(rng, arm, rho, methods, source=source, method=m)
-        if rec is not None:
-            return k, rec
+        if methods:
+            return k, draw_method(rng, methods)
         k = int(rng.integers(0, n_frames))
-    raise RuntimeError(f"Không bốc được recipe sau {max_tries} lần (arm={arm})")
+    raise RuntimeError(f"Không tìm được frame có fake sau {max_tries} lần")

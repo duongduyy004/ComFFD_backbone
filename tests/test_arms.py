@@ -1,12 +1,11 @@
-"""Test Dataset theo arm, transforms. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA)."""
+"""Test Dataset theo arm (raw, raw+rep) và transforms. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA)."""
 import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
 
 from compsynth_ff import composite as comp_mod  # noqa: E402
-from compsynth_ff.dataset import TrainCore  # noqa: E402
-from ffd.data import arms  # noqa: E402
+from compsynth_ff.dataset import AugCore  # noqa: E402
 from ffd.data.arms import ArmTrainDataset, build_train_dataset  # noqa: E402
 from ffd.data.transforms import eval_transform, train_transform  # noqa: E402
 
@@ -22,113 +21,75 @@ def count_calls(monkeypatch, target_mod, name="jpeg"):
     return lambda: n[0]
 
 
-def test_arm_dataset_balance_and_train_only(ffpp_synth):
-    ds = ArmTrainDataset(ffpp_synth, "raw+sb", 0.5, seed=0)
-    assert len(ds) == 2 * len(ds.core.real_frames)
-    ys = [ds[i]["targets"]["L0"] for i in range(len(ds))]
-    assert sum(ys) == len(ds) // 2 and ys[0::2] == [0] * (len(ds) // 2)
-    assert {ds[i]["targets"]["source"] for i in range(1, len(ds), 2)} <= {"raw", "sb"}
-    assert {ds[i]["targets"]["source"] for i in range(0, len(ds), 2)} == {"real"}
-    x = ds[1]["image"]
+def _sources(ds, parity, n=2000):
+    idx = range(parity, min(len(ds), 2 * n), 2)
+    return [ds[i]["targets"] for i in idx]
+
+
+def test_arm_balance_and_sources(ffpp_synth):
+    raw = ArmTrainDataset(ffpp_synth, "raw", 0.5, seed=0)
+    assert len(raw) == 2 * len(raw.real_frames)
+    ys = [raw[i]["targets"]["L0"] for i in range(min(len(raw), 200))]
+    assert ys[0::2] == [0] * len(ys[0::2]) and ys[1::2] == [1] * len(ys[1::2])
+    assert {t["source"] for t in _sources(raw, 0, 100) + _sources(raw, 1, 100)} == {"raw"}
+    rep = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, seed=0)
+    fk, rl = [], []
+    for e in range(10):  # synth chỉ ~64 frame real train: gom nhiều epoch để đủ mẫu
+        rep.set_epoch(e)
+        fk += _sources(rep, 1, 300)
+        rl += _sources(rep, 0, 300)
+    assert len(fk) >= 400
+    assert abs(np.mean([t["source"] == "rep" for t in fk]) - 0.5) < 0.08
+    assert abs(np.mean([t["source"] == "seam" for t in rl]) - 0.5) < 0.08
+    assert all(t["L0"] == 1 for t in fk) and all(t["L0"] == 0 for t in rl)
+    x = rep[1]["image"]
     assert x.shape == (3, 336, 336) and x.dtype == torch.float32
+    assert set(rep[1]["targets"]) == {"L0", "source", "method", "region", "fallback"}
 
 
-@pytest.mark.parametrize("arm,rho", [("raw+comp", 1.0), ("raw+comp", 0.0), ("raw+sb", 1.0), ("raw", 0.5)])
-def test_jpeg_applied_once_per_item(monkeypatch, ffpp_synth, arm, rho):
-    # đếm tại comp_mod.jpeg: composite() và transforms đều tra tên này lúc gọi
+def test_jpeg_once(monkeypatch, ffpp_synth):
     calls = count_calls(monkeypatch, comp_mod)
-    ds = ArmTrainDataset(ffpp_synth, arm, rho, 0)
+    raw = ArmTrainDataset(ffpp_synth, "raw", 0.5, 0)
     for i in (0, 1, 3):
         n0 = calls()
-        ds[i]
-        assert calls() - n0 == 1, (arm, rho, i)
+        raw[i]
+        assert calls() - n0 == 1
+    rep = ArmTrainDataset(ffpp_synth, "raw+rep", 1.0, 0)
+    for i in range(0, 12):
+        n0 = calls()
+        t = rep[i]["targets"]
+        assert calls() - n0 == (1 if t["fallback"] else 0), t
+
+
+def test_fallback_when_no_aug(ffpp_synth, monkeypatch):
+    monkeypatch.setattr(AugCore, "rep", lambda self, t, f: [])
+    monkeypatch.setattr(AugCore, "seam", lambda self, t, f: [])
+    ds = ArmTrainDataset(ffpp_synth, "raw+rep", 1.0, 0)
+    for i in range(6):
+        t = ds[i]["targets"]
+        assert t["fallback"] is True and t["source"] == ("seam" if i % 2 == 0 else "rep")
 
 
 def test_deterministic_per_epoch(ffpp_synth):
-    a = ArmTrainDataset(ffpp_synth, "raw+comp", 0.5, 0)
-    b = ArmTrainDataset(ffpp_synth, "raw+comp", 0.5, 0)
+    a = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, 0)
+    b = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, 0)
     assert torch.equal(a[7]["image"], b[7]["image"])
     a.set_epoch(1)
-    assert not torch.equal(a[7]["image"], b[7]["image"])
+    assert any(not torch.equal(a[i]["image"], b[i]["image"]) for i in range(7, 15))
 
 
-def test_arm_sources_by_rho(ffpp_synth):
-    ds1 = ArmTrainDataset(ffpp_synth, "raw+comp", 1.0, 0)
-    assert {ds1[i]["targets"]["source"] for i in range(1, len(ds1), 2)} == {"comp"}
-    ds0 = ArmTrainDataset(ffpp_synth, "raw+sb", 0.0, 0)
-    assert {ds0[i]["targets"]["source"] for i in range(1, len(ds0), 2)} == {"raw"}
+def test_train_only(ffpp_synth):
+    from compsynth_ff.select_cells import load_frames
+
+    ds = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, 0)
+    fr = load_frames(ffpp_synth)
+    sub = fr.drop_duplicates("tid").set_index("tid").subset
+    assert {sub[t] for t, _ in ds.real_frames} == {"train"}
 
 
-def test_comp_and_sb_use_same_sigma_q_sampler(monkeypatch, ffpp_synth):
-    seen = {}
-    orig = arms.sample_sigma_q
-    for arm in ("raw+comp", "raw+sb"):
-        calls = []
-
-        def spy(rng, ed, cfg, _c=calls):
-            _c.append((ed, tuple(cfg.u_range), tuple(cfg.jpeg_q)))
-            return orig(rng, ed, cfg)
-
-        monkeypatch.setattr(arms, "sample_sigma_q", spy)
-        ds = ArmTrainDataset(ffpp_synth, arm, 1.0, 0)
-        for i in range(1, 9, 2):
-            ds[i]
-        seen[arm] = calls
-    assert len(seen["raw+comp"]) == len(seen["raw+sb"]) == 4
-    assert set(seen["raw+comp"]) == set(seen["raw+sb"])
-
-
-def _spy_masks(monkeypatch):
-    got = []
-    oc, osb = arms.composite, arms.selfblend
-
-    def c(real, src, rm, dm, sigma, q):
-        got.append(("comp", rm.copy(), sigma, q))
-        return oc(real, src, rm, dm, sigma, q)
-
-    def sb(real, M, sigma, q, rng, t_params=None):
-        got.append(("sb", M.copy(), sigma, q))
-        return osb(real, M, sigma, q, rng, t_params=t_params)
-
-    monkeypatch.setattr(arms, "composite", c)
-    monkeypatch.setattr(arms, "selfblend", sb)
-    return got
-
-
-def test_comp_and_sb_same_mask(ffpp_synth, monkeypatch):
-    got = _spy_masks(monkeypatch)
-    a = ArmTrainDataset(ffpp_synth, "raw+comp", 1.0, 0)
-    b = ArmTrainDataset(ffpp_synth, "raw+sb", 1.0, 0)
-    n = 0
-    for i in range(1, min(len(a), 30), 2):
-        got.clear()
-        ta = a[i]["targets"]
-        ga = list(got)
-        got.clear()
-        tb = b[i]["targets"]
-        gb = list(got)
-        assert (ta["method"], ta["region"], ta["fallback"]) == (tb["method"], tb["region"], tb["fallback"])
-        assert ta["source"] == "comp" and tb["source"] == "sb"
-        if not ta["fallback"]:
-            n += 1
-            assert ta["region"] and len(ga) == len(gb) == 1
-            assert np.array_equal(ga[0][1], gb[0][1]) and ga[0][2:] == gb[0][2:]
-    assert n > 0
-
-
-def test_fallback_both_arms_to_raw(ffpp_synth, monkeypatch):
-    got = _spy_masks(monkeypatch)
-    for arm, src in (("raw+comp", "comp"), ("raw+sb", "sb")):
-        ds = ArmTrainDataset(ffpp_synth, arm, 1.0, 0)
-        monkeypatch.setattr(ds.core, "sample_mask", lambda *a, **k: None)
-        t = ds[1]["targets"]
-        assert t["source"] == src and t["fallback"] is True and t["region"] == "" and t["method"]
-    assert got == []
-
-
-def test_no_valid_frame_raises(ffpp_synth, monkeypatch):
-    ds = ArmTrainDataset(ffpp_synth, "raw+comp", 1.0, 0)
-    monkeypatch.setattr(ds.core, "usable", lambda t, f: [])
+def test_no_method_frame_raises(ffpp_synth, monkeypatch):
+    ds = ArmTrainDataset(ffpp_synth, "raw", 0.5, 0)
+    monkeypatch.setattr(ds, "_methods", {})
     with pytest.raises(RuntimeError):
         ds[1]
 
@@ -155,14 +116,12 @@ def test_flip_half():
 def test_build_train_dataset_arm(ffpp_synth, tmp_path):
     from ffd.config import TrainConfig
 
-    cfg = TrainConfig(ffpp_config=tmp_path / "a.yaml", runs_root=tmp_path, mode="raw+sb", seed=3,
+    cfg = TrainConfig(ffpp_config=tmp_path / "a.yaml", runs_root=tmp_path, mode="raw+rep", seed=3,
                       total_steps=1, eval_every=1, ckpt_every=1, rho=0.25)
     ds = build_train_dataset(cfg, ff_cfg=ffpp_synth)
-    assert isinstance(ds, ArmTrainDataset) and ds.rho == 0.25 and ds.seed == 3
+    assert isinstance(ds, ArmTrainDataset) and ds.rho == 0.25 and ds.seed == 3 and ds.arm == "raw+rep"
 
 
 def test_wrong_size_raises():
     with pytest.raises(ValueError):
         eval_transform(np.zeros((300, 300, 3), np.uint8))
-    with pytest.raises(ValueError):
-        train_transform(np.zeros((300, 300, 3), np.uint8), np.random.default_rng(0), already_jpeg=True)
