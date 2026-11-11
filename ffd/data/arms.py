@@ -4,7 +4,7 @@
 - Ảnh tăng cường (chỉ arm raw+rep): `ffpp_aug/train` (AugCore) — rep (nhãn fake), seam (nhãn real).
 real:fake = 1:1 (mục chẵn real, lẻ fake). ρ cho cả hai lớp.
 Ảnh gốc nén JPEG một lần trong train_transform; ảnh tăng cường đã nén khi tạo (already_jpeg=True).
-Không còn ảnh tăng cường cho frame → dùng ảnh gốc, `fallback=True`, giữ nguồn đã bốc.
+Frame không có đủ cả rep lẫn seam → dùng ảnh gốc, `fallback=True`, giữ nguồn đã bốc (cùng tập frame cho hai lớp).
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
@@ -51,8 +51,11 @@ class ArmTrainDataset(torch.utils.data.Dataset):
                                         "fallback": bool(fallback)}}
 
     def _aug(self, kind, t, f, rng):
+        """Ảnh tăng cường loại `kind` của frame (t, f), CHỈ khi frame có cả rep lẫn seam (Final I1): seam bị skip
+        nhiều hơn rep, nên nếu không ghép cặp thì tỉ lệ ảnh tăng cường thực tế sẽ lệch giữa hai lớp."""
         paths = getattr(self.aug, kind)(t, f)
-        if not paths:
+        other = getattr(self.aug, "seam" if kind == "rep" else "rep")(t, f)
+        if not paths or not other:
             return None
         p = sorted(paths)[int(rng.integers(0, len(paths)))]
         return self.aug.read(p), self.aug.meta(p)

@@ -125,3 +125,19 @@ def test_build_train_dataset_arm(ffpp_synth, tmp_path):
 def test_wrong_size_raises():
     with pytest.raises(ValueError):
         eval_transform(np.zeros((300, 300, 3), np.uint8))
+
+
+def test_aug_only_where_both_kinds_exist(ffpp_synth, monkeypatch):
+    """Final I1: frame chỉ có rep (seam bị skip) → mục fake chọn rep cũng phải fallback, để tỉ lệ ảnh tăng cường
+    thực tế bằng nhau ở hai lớp. Ngược lại, frame chỉ có seam → mục real chọn seam fallback."""
+    monkeypatch.setattr(AugCore, "seam", lambda self, t, f: [])
+    ds = ArmTrainDataset(ffpp_synth, "raw+rep", 1.0, 0)
+    for i in range(1, 12, 2):
+        t = ds[i]["targets"]
+        assert t["source"] == "rep" and t["fallback"] is True, t
+    monkeypatch.undo()
+    monkeypatch.setattr(AugCore, "rep", lambda self, t, f: [])
+    ds = ArmTrainDataset(ffpp_synth, "raw+rep", 1.0, 0)
+    for i in range(0, 12, 2):
+        t = ds[i]["targets"]
+        assert t["source"] == "seam" and t["fallback"] is True, t
