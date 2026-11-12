@@ -1,7 +1,7 @@
-"""Smoke trên GPU với ViT-L thật: đo VRAM đỉnh, giây/step; xuất ảnh để duyệt tham số T của self-blend.
+"""Smoke trên GPU với ViT-L thật: đo VRAM đỉnh, giây/step; chép ảnh rep/seam để duyệt bằng mắt.
 
 Ghi `<runs_root>/smoke/smoke.json` (peak_vram_gb, sec_per_step, batch_size, steps, model_revision, model_commit) và
-`smoke_samples/{comp,sb}_XX.png` (16 ảnh mỗi loại; chuẩn hóa CLIP đã đảo ngược, lưu RGB->BGR bằng cv2).
+`smoke_samples/{rep,seam}_XX.jpg` (16 ảnh mỗi loại, chép nguyên file JPEG từ ffpp_aug/train, trải đều theo manifest).
 Không ghi vào run dir của train, không chạm val/test.
 Trạng thái: chưa chạy thử.
 """
@@ -12,7 +12,6 @@ import shutil
 import time
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
 import torch
@@ -20,17 +19,9 @@ import torch
 from . import progress
 from .config import TrainConfig
 from .data.arms import ArmTrainDataset
-from .data.transforms import CLIP_MEAN, CLIP_STD
 from .model import Detector
 
 N_SAMPLES = 16
-
-
-def _to_png(x: torch.Tensor) -> np.ndarray:
-    mean = torch.tensor(CLIP_MEAN).view(3, 1, 1)
-    std = torch.tensor(CLIP_STD).view(3, 1, 1)
-    rgb = (x.cpu() * std + mean).clamp(0, 1).mul(255).round().byte().permute(1, 2, 0).numpy()
-    return np.ascontiguousarray(rgb[:, :, ::-1])
 
 
 def _dump_samples(ff_cfg, kind: str, out: Path) -> int:
