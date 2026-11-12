@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from compsynth_ff.composite import DEFAULT_T
 
 MODES = ("raw", "raw+rep")  # spec augmentation can_bang_duong_noi §4
+# Tham số self-blend mặc định (trước đây ở compsynth_ff.composite, chuyển về đây 12/11). Giá trị giữ nguyên để hash
+# config/prereg không đổi. Khóa `selfblend` hiện không được code train dùng; chỉ còn vì là khóa prereg bắt buộc.
+DEFAULT_T = {"hue": 5.0, "sat": 0.10, "val": 0.10, "brightness": 10.0, "contrast": 0.10, "scale": 0.05, "shift": 2.0}
 # Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI. File prereg chỉ được chứa các khóa này.
 PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
                "batch_size", "grad_accum", "selfblend", "model_name", "model_revision", "head", "tap_layers",

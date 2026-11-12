@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from compsynth_ff.composite import DEFAULT_T
+from ffd.config import DEFAULT_T
 
 from ffd.config import config_hash, file_hash, load_train_config
 from prereg_util import full_prereg

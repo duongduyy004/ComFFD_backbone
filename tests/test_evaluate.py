@@ -180,7 +180,7 @@ def test_ffpp_expected_set_from_manifest_without_data_root(trained_tiny_run, ffp
 def test_run_info_records_model_and_ffpp_provenance(trained_tiny_run, ffpp_synth):
     """I2/I3: run_info ghi model_revision (None khi chưa ghim), model_commit ("local" với vision_config),
     ffpp_config_hash = ffpp_config_hash(ff_cfg) (R1: Config đã parse, bỏ đường dẫn) và
-    ffpp_stage_hash = stage_hash(ff_cfg, 'render')."""
+    ffpp_stage_hash = stage_hash(ff_cfg, 'aug')."""
     from compsynth_ff.config import stage_hash
 
     from ffd.rundir import ffpp_config_hash
