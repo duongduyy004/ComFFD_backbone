@@ -15,15 +15,6 @@ def test_cli_rejects_unknown_dataset():
     assert r.returncode != 0 and "ffpp_val" in r.stderr
 
 
-def test_cli_prep_cross_only_cdf2():
-    assert run_cli(["prep-cross", "--dataset", "dfdc", "--root", "r", "--out", "o", "--ffpp-config", "c"]).returncode != 0
-
-
-def test_cli_bad_cross_root():
-    r = run_cli(["eval", "--run", "x", "--datasets", "cdf2", "--cross-root", "nopath"])
-    assert r.returncode != 0 and "cross-root" in r.stderr
-
-
 def test_cli_set_locked_key_rejected(tmp_path):
     cfg = tmp_path / "c.yaml"
     pre = tmp_path / "p.yaml"
@@ -41,15 +32,6 @@ def test_parse_set():
         {"lr": 1e-4, "seed": 2, "mode": "raw+rep", "num_workers": 0}
     with pytest.raises(ValueError):
         parse_sets(["noequals"])
-
-
-def test_make_detector_without_facexlib_clear_error(monkeypatch):
-    from ffd import cli
-
-    monkeypatch.setitem(sys.modules, "facexlib", None)  # import -> ImportError
-    with pytest.raises(SystemExit) as e:
-        cli._make_detector()
-    assert "facexlib" in str(e.value)
 
 
 def _cfg(tmp_path, prereg=None):

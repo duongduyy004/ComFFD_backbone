@@ -1,4 +1,4 @@
-"""Chốt chặn leakage cho giai đoạn train: train không được đọc test hay cross-dataset.
+"""Chốt chặn leakage cho giai đoạn train: train không được đọc test.
 
 Trạng thái: chưa chạy thử.
 """
@@ -11,11 +11,11 @@ from compsynth_ff.guards import LeakageError  # dùng lại cùng lớp lỗi c�
 __all__ = ["LeakageError", "allow_read", "val_set_for"]
 
 _TRAIN_ALLOWED = {"ffpp_train", "ffpp_val"}
-_EVAL_ALLOWED = {"ffpp_test", "cdf2"}  # chỉ tập test/cross, không train/val
+_EVAL_ALLOWED = {"ffpp_test"}  # chỉ tập test, không train/val
 
 
 def allow_read(stage: Literal["train", "eval"], what: str) -> None:
-    """Giai đoạn `train` chỉ được đọc nguồn train/val (ffpp_train, ffpp_val); test, cross hay lạ -> LeakageError."""
+    """Giai đoạn `train` chỉ được đọc nguồn train/val (ffpp_train, ffpp_val); test hay nguồn lạ -> LeakageError."""
     if stage not in ("train", "eval"):
         raise ValueError(f"stage phải là 'train' hoặc 'eval', nhận {stage!r}")
     if stage == "train" and what not in _TRAIN_ALLOWED:

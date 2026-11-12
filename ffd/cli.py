@@ -1,4 +1,4 @@
-"""CLI: python -m ffd.cli {train,eval,prep-cross,report,smoke}.
+"""CLI: python -m ffd.cli {train,eval,report,smoke}.
 
 Import nặng (torch, model) để trễ trong từng lệnh, nên kiểm tra tham số lỗi thất bại nhanh.
 `train` KHÔNG truyền allow_cpu (train thật cần CUDA); `--set k=v` đi qua load_train_config nên khóa prereg bị từ chối.
@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-EVAL_DATASETS = ("ffpp_test", "cdf2")
+EVAL_DATASETS = ("ffpp_test",)
 
 
 def _scalar(v: str, yaml):
@@ -33,29 +33,6 @@ def parse_sets(items) -> dict:
             raise ValueError(f"--set phải dạng k=v, nhận {it!r}")
         out[k.strip()] = _scalar(v, yaml)
     return out
-
-
-def parse_cross_roots(items) -> dict:
-    out = {}
-    for it in items or []:
-        k, sep, v = it.partition("=")
-        if not sep or not k or not v:
-            raise SystemExit(f"--cross-root phải dạng ten=duong_dan, nhận {it!r}")
-        out[k] = Path(v)
-    return out
-
-
-def _make_detector():
-    try:
-        import facexlib  # noqa: F401
-        import torch
-        from compsynth_ff.align import RetinaFaceDetector
-
-        if not torch.cuda.is_available():
-            raise SystemExit("prep-cross cần CUDA cho RetinaFace; không thấy GPU.")
-        return RetinaFaceDetector("cuda")
-    except ImportError as e:
-        raise SystemExit(f"Thiếu facexlib/torch cho RetinaFace ({e}). Cài: pip install -e ../preprocessing[gpu]") from e
 
 
 def _load_cfg(config, sets, pilot: bool = False):
@@ -95,27 +72,15 @@ def _cmd_eval(a):
     bad = [x for x in ds if x not in EVAL_DATASETS]
     if bad or not ds:
         raise SystemExit(f"--datasets không hợp lệ {bad}; chỉ chấp nhận {list(EVAL_DATASETS)}")
-    roots = parse_cross_roots(a.cross_root)
-    if "cdf2" in ds and "cdf2" not in roots:
-        raise SystemExit("Thiếu --cross-root cdf2=<đường dẫn> cho dataset cdf2")
     ff_cfg = None
     if a.ffpp_config:
         from compsynth_ff.config import load_config
 
         ff_cfg = load_config(Path(a.ffpp_config))
     try:
-        print(evaluate_run(a.run, ds, roots, ff_cfg=ff_cfg, prereg=a.prereg))
+        print(evaluate_run(a.run, ds, ff_cfg=ff_cfg, prereg=a.prereg))
     except ValueError as e:
         raise SystemExit(f"Lỗi eval: {e}") from e
-
-
-def _cmd_prep_cross(a):
-    from compsynth_ff.config import load_config
-
-    from .data.cross import prep_cross
-
-    cfg = load_config(Path(a.ffpp_config))
-    print(prep_cross(a.dataset, a.root, a.out, cfg, _make_detector()))
 
 
 def _cmd_report(a):
@@ -156,20 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     e = sp.add_parser("eval", parents=[common])
     e.add_argument("--run", required=True)
     e.add_argument("--datasets", required=True, help=",".join(EVAL_DATASETS))
-    e.add_argument("--cross-root", action="append", default=[], metavar="name=path")
     e.add_argument("--ffpp-config", default=None,
                    help="config FF++ trên máy eval (khác máy train); tham số phải trùng lúc train, đường dẫn được khác")
     e.add_argument("--prereg", default=None, help="đường dẫn prereg trên máy eval; nội dung phải trùng lúc train")
     e.set_defaults(fn=_cmd_eval)
-
-    from .data.cross import READERS  # nhẹ: chỉ pandas/numpy
-
-    c = sp.add_parser("prep-cross", parents=[common])
-    c.add_argument("--dataset", required=True, choices=sorted(READERS))
-    c.add_argument("--root", required=True)
-    c.add_argument("--out", required=True)
-    c.add_argument("--ffpp-config", required=True)
-    c.set_defaults(fn=_cmd_prep_cross)
 
     r = sp.add_parser("report", parents=[common])
     r.add_argument("--runs-root", required=True)

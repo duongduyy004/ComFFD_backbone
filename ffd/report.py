@@ -5,7 +5,7 @@ Quy tắc trung thực:
 - Điểm mức video tính TRƯỚC (`stats.video_scores`: trung bình logit theo video_id), mọi AUC/CI/DeLong dùng bảng video.
   Video có cờ no_usable_frame/decode_error (logit 0.0) vẫn nằm trong AUC và được đếm riêng trong chú thích.
 - AUC video tính trên bảng video. CI: `bootstrap_ci` n=1000, alpha=0.05, seed 0, resample theo CỤM video nguồn
-  `tid` cho ffpp_test ("{tid}_{src}"), các video cùng tid (real + mọi fake) cùng vào hoặc cùng ra; cdf2: cụm = video.
+  `tid` cho ffpp_test ("{tid}_{src}"), các video cùng tid (real + mọi fake) cùng vào hoặc cùng ra; dataset khác: cụm = video.
 - AUC frame: trên mọi dòng frame thật (bỏ dòng cờ frame_idx=-1), báo cạnh AUC video trong main.md.
 - DeLong ghép cặp, gom cụm theo cùng cụm với CI (`stats.delong_paired_clustered`, Obuchowski 1997): các arm
   so từng cặp trong CÙNG dataset và CÙNG seed, qua

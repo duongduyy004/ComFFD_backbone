@@ -27,7 +27,6 @@ def test_disabled_prints_nothing(capsys, monkeypatch):
 def test_cli_no_progress_flag_on_every_command():
     p = build_parser()
     for argv in (["train", "--config", "x.yaml"], ["eval", "--run", "r", "--datasets", "ffpp_test"],
-                 ["report", "--runs-root", "r"], ["smoke", "--config", "x.yaml"],
-                 ["prep-cross", "--dataset", "cdf2", "--root", "a", "--out", "b", "--ffpp-config", "c"]):
+                 ["report", "--runs-root", "r"], ["smoke", "--config", "x.yaml"]):
         assert p.parse_args(argv + ["--no-progress"]).no_progress
         assert not p.parse_args(argv).no_progress

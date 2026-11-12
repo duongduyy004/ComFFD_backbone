@@ -2,7 +2,7 @@
 
 Cột: run, mode, seed, split, dataset, video_id, frame_idx, label, logit, cell, flag, best_step (step của best.pt đã chấm).
 Quy ước:
-- `datasets` ⊆ {ffpp_test, cdf2}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
+- `datasets` ⊆ {ffpp_test}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
 - Chỉ nạp `best.pt` (qua `Detector.load_trainable`); cần `done.flag`; nếu run có prereg thì hash trong
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
 - Artifact tiền xử lý phải trùng lúc train: `ffpp_config_hash` (Config FF++ đã parse, bỏ đường dẫn) và `ffpp_stage_hash`
@@ -14,10 +14,6 @@ Quy ước:
   ffpp_raw/manifest.parquet (expected_source="ffpp_raw_manifest" ghi vào run/eval_info.json), video_id = "{tid}_{src}",
   cell = "". Video kỳ vọng không còn frame keep -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame";
   video chấm được mà không thuộc tập kỳ vọng -> ValueError.
-- cdf2: manifest của `prep_cross` (cross_roots[name] là thư mục chứa manifest.parquet + crops/, hoặc cha của nó
-  chứa thư mục `name/`). Chỉ chấm frame keep=True. Video chỉ có dòng frame_idx == -1 & drop_reason == "no_usable_frame"
-  -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"; drop_reason == "decode_error" -> flag="decode_error"
-  (không bỏ video nào im lặng). Logit không hữu hạn -> ValueError.
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
@@ -25,12 +21,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
 import torch
 from compsynth_ff.config import load_config
-from compsynth_ff.io_utils import read_png, write_json_atomic, write_parquet_atomic
+from compsynth_ff.io_utils import write_json_atomic, write_parquet_atomic
 
 from . import progress
 from .config import TrainConfig, config_hash, file_hash
@@ -40,7 +35,7 @@ from .model import Detector
 from .rundir import ffpp_hashes
 from .train import _autocast
 
-DATASETS = ("ffpp_test", "cdf2")
+DATASETS = ("ffpp_test",)
 COLUMNS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
            "best_step"]
 
@@ -135,35 +130,7 @@ def _ffpp_test(model, ff_cfg, bs, device):
     return df, "ffpp_raw_manifest"
 
 
-def _cross(model, name, root, bs, device) -> pd.DataFrame:
-    allow_read("eval", name)
-    root = Path(root)
-    base = root if (root / "manifest.parquet").exists() else root / name
-    man = pd.read_parquet(base / "manifest.parquet")
-    if (man.dataset != name).any():
-        raise ValueError(f"manifest {base} chứa dataset khác {name!r}")
-    keep = man[man.keep].sort_values(["video_id", "frame_idx"]).reset_index(drop=True)
-    paths = [base / "crops" / r.video_id / f"{int(r.frame_idx):05d}.png" for r in keep.itertuples()]
-    lg = _score(model, len(keep), lambda i: read_png(paths[i], cv2.IMREAD_COLOR), bs, device, f"eval {name}")
-    parts = [pd.DataFrame({"video_id": keep.video_id, "frame_idx": keep.frame_idx.astype("int64"),
-                           "label": keep.label.astype("int64"), "logit": lg, "cell": "", "flag": ""})]
-    has_keep = set(keep.video_id)
-    for flag in ("no_usable_frame", "decode_error"):
-        f = man[(man.frame_idx == -1) & (man.drop_reason == flag)]
-        if len(f) != f.video_id.nunique():
-            raise ValueError(f"manifest có video trùng dòng {flag}")
-        if set(f.video_id) & has_keep:
-            raise ValueError(f"video vừa có frame keep vừa bị {flag}: manifest sai hợp đồng")
-        parts.append(pd.DataFrame({"video_id": f.video_id, "frame_idx": -1, "label": f.label.astype("int64"),
-                                   "logit": 0.0, "cell": "", "flag": flag}))
-    out = pd.concat(parts, ignore_index=True)
-    lost = set(man.video_id) - set(out.video_id)
-    if lost:  # video không có frame keep và không có dòng cờ: manifest vi phạm hợp đồng, không bỏ im lặng
-        raise ValueError(f"{len(lost)} video không có frame keep cũng không có dòng cờ (ví dụ {sorted(lost)[0]!r})")
-    return out
-
-
-def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, prereg=None, vision_config=None,
+def evaluate_run(run, datasets: list[str], *, ff_cfg=None, prereg=None, vision_config=None,
                  device=None, batch_size: int = 16) -> Path:
     """Chấm điểm best.pt của `run` trên `datasets`, ghi `run/scores_{dataset}.parquet` mỗi dataset; trả thư mục run."""
     run = Path(run)
@@ -172,8 +139,6 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, pr
         raise ValueError(f"datasets không hợp lệ {bad}; chỉ {list(DATASETS)}")
     if not datasets:
         raise ValueError("datasets rỗng")
-    if "cdf2" in datasets and "cdf2" not in cross_roots:
-        raise ValueError("Thiếu cross_roots['cdf2']")
     cfg, info, ff_cfg = _check_run(run, ff_cfg, prereg)
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     # Seed như train() trước khi dựng model: với `vision_config` ngẫu nhiên (test) phần đóng băng không nằm trong
@@ -187,11 +152,8 @@ def evaluate_run(run, datasets: list[str], cross_roots: dict, *, ff_cfg=None, pr
     model.eval()
     frames, eval_info = [], {}
     for ds in datasets:
-        if ds == "ffpp_test":
-            df, src = _ffpp_test(model, ff_cfg, batch_size, device)
-            eval_info["ffpp_test"] = {"expected_source": src}
-        else:
-            df = _cross(model, ds, cross_roots[ds], batch_size, device)
+        df, src = _ffpp_test(model, ff_cfg, batch_size, device)
+        eval_info["ffpp_test"] = {"expected_source": src}
         frames.append(_frame(df, dataset=ds))
     df = pd.concat(frames, ignore_index=True)
     rid = f"{cfg.mode}/seed{cfg.seed}"
