@@ -8,11 +8,18 @@ Trạng thái: chưa chạy thử trên GPU/dữ liệu thật.
 
 ## Cài đặt
 
-```bash
-pip install -e ../preprocessing -e .
+Venv riêng cho detector (PowerShell, chạy trong thư mục `detector/`):
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+pip install torch --index-url https://download.pytorch.org/whl/cu128   # đổi cuXXX theo driver (nvidia-smi)
+pip install -r requirements.txt
+python -c "import torch, compsynth_ff; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-Train và smoke cần CUDA.
+`requirements.txt` ghim phiên bản đã chạy pytest, gồm cả `-e ../preprocessing` (detector import `compsynth_ff`). torch cài riêng vì bản CUDA lấy từ index pytorch.org. Train và smoke cần CUDA (dòng cuối phải in `True`).
 
 ## Thứ tự chạy
 
