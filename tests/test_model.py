@@ -141,19 +141,35 @@ def test_binary_head_fp32_under_autocast(tiny):
 
 
 def test_from_pretrained_gets_revision_and_records_commit(tiny, monkeypatch):
-    """I2 (không mạng): revision truyền vào from_pretrained; commit lấy từ config._commit_hash."""
+    """I2 (không mạng): revision truyền vào from_pretrained và resolve_commit; commit lấy từ resolve_commit
+    (transformers 5 không còn config._commit_hash)."""
+    import ffd.backbone
     from transformers import CLIPVisionModel
 
     seen = {}
 
     def fake(name, **kw):
         seen.update(kw, name=name)
-        m = CLIPVisionModel(tiny["vision_config"])
-        m.config._commit_hash = "c0ffee"
-        return m
+        return CLIPVisionModel(tiny["vision_config"])
 
     monkeypatch.setattr(CLIPVisionModel, "from_pretrained", staticmethod(fake))
+    monkeypatch.setattr(ffd.backbone, "resolve_commit", lambda n, r: f"sha-of-{n}@{r}")
     d = Detector(cfg(model_revision="c0ffee"))
     assert seen == {"name": "openai/clip-vit-large-patch14-336", "revision": "c0ffee"}
-    assert d.trunk.commit == "c0ffee"
+    assert d.trunk.commit == "sha-of-openai/clip-vit-large-patch14-336@c0ffee"
     assert Detector(cfg(), vision_config=tiny["vision_config"]).trunk.commit == "local"
+
+
+def test_resolve_commit_from_cache_path(tmp_path, monkeypatch):
+    """transformers 5 bỏ config._commit_hash -> commit lấy từ đường dẫn snapshots/<commit>/; đường dẫn lạ -> lỗi."""
+    import huggingface_hub
+    from ffd.backbone import resolve_commit
+
+    snap = tmp_path / "models--org--m" / "snapshots" / "c0ffee123"
+    snap.mkdir(parents=True)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(snap / "config.json"))
+    assert resolve_commit("org/m", "main") == "c0ffee123"
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(tmp_path / "x" / "config.json"))
+    with pytest.raises(ValueError, match="commit"):
+        resolve_commit("org/m")
+    assert resolve_commit(str(tmp_path)).startswith("local:")

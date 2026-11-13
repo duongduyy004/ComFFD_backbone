@@ -2,13 +2,31 @@
 
 `vision_config` cho phép test dựng model nhỏ ngẫu nhiên (không tải trọng số).
 `model_revision` truyền vào `from_pretrained(revision=...)`; `self.commit` = commit HF đã resolve
-(`vit.config._commit_hash`), hoặc "local" khi dựng từ vision_config.
+(`resolve_commit`, đọc từ đường dẫn cache HF), hoặc "local" khi dựng từ vision_config.
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
 import torch
 from torch import nn
+
+
+def resolve_commit(model_name, revision=None):
+    """Commit HF đã resolve, lấy từ đường dẫn cache `.../snapshots/<commit>/config.json`.
+
+    transformers >= 5 không còn giữ `config._commit_hash` (luôn None). Thư mục local -> "local:<path>".
+    Không resolve được -> ValueError (không để None lọt vào run_info, vì eval so None == None sẽ qua).
+    """
+    from pathlib import Path
+
+    if Path(model_name).is_dir():
+        return f"local:{Path(model_name).resolve()}"
+    from huggingface_hub import hf_hub_download
+
+    p = Path(hf_hub_download(model_name, "config.json", revision=revision))
+    if p.parent.parent.name != "snapshots":
+        raise ValueError(f"không resolve được commit HF của {model_name!r} (đường dẫn cache lạ: {p})")
+    return p.parent.name
 
 
 class ClipLoraTrunk(nn.Module):
@@ -23,7 +41,7 @@ class ClipLoraTrunk(nn.Module):
             self.commit = "local"
         else:
             vit = CLIPVisionModel.from_pretrained(model_name, revision=model_revision)
-            self.commit = getattr(vit.config, "_commit_hash", None)
+            self.commit = resolve_commit(model_name, model_revision)
         self.dim = vit.config.hidden_size
         self.num_layers = vit.config.num_hidden_layers
         self.tap_layers = tuple(tap_layers)
