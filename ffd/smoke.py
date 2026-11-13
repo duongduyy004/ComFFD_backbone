@@ -20,6 +20,7 @@ from . import progress
 from .config import TrainConfig
 from .data.arms import ArmTrainDataset
 from .model import Detector
+from .train import loader_kwargs
 
 N_SAMPLES = 16
 
@@ -54,15 +55,15 @@ def smoke(cfg: TrainConfig, steps: int) -> Path:
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     ds = ArmTrainDataset(cfg.ffpp_root, "raw+rep", cfg.rho, cfg.seed, cfg.jpeg_q)
-    loader = torch.utils.data.DataLoader(ds, batch_size=cfg.batch_size, shuffle=True,
-                                         num_workers=cfg.num_workers, drop_last=True)
+    loader = torch.utils.data.DataLoader(ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True,
+                                         **loader_kwargs(cfg.num_workers, device, cfg.seed))
     model.train()
     torch.cuda.reset_peak_memory_stats()
     done, t0 = 0, None
     pb = progress.bar(total=steps, desc="smoke", unit="step")
     while done < steps:
         for batch in loader:
-            x = batch["image"].to(device)
+            x = batch["image"].to(device, non_blocking=True)
             tg = {k: v.to(device) for k, v in batch["targets"].items() if torch.is_tensor(v)}
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 loss, _ = model.head.loss(model(x), tg)

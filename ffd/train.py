@@ -63,6 +63,40 @@ def _val_items(cfg: TrainConfig, subset: str = "val"):
     return core, rows
 
 
+def loader_kwargs(num_workers: int, device, seed: int = 0) -> dict:
+    """Tham số DataLoader dùng chung cho train/val/eval. Chỉ ảnh hưởng tốc độ, không đổi ảnh hay thứ tự:
+    pin_memory khi CUDA (chép sang GPU không chặn), prefetch 4 batch/worker, worker_init_fn seed + OpenCV 1 luồng."""
+    kw = {"num_workers": num_workers, "pin_memory": torch.device(device).type == "cuda", "persistent_workers": False}
+    if num_workers:
+        kw.update(prefetch_factor=4, worker_init_fn=functools.partial(_seed_worker, seed=seed))
+    return kw
+
+
+class EvalImages(torch.utils.data.Dataset):
+    """Ảnh eval_transform của core[idx[j]] theo đúng thứ tự idx (cấp module để pickle được với spawn)."""
+
+    def __init__(self, core, idx):
+        self.core, self.idx = core, list(idx)
+
+    def __len__(self) -> int:
+        return len(self.idx)
+
+    def __getitem__(self, j: int) -> torch.Tensor:
+        return eval_transform(self.core[self.idx[j]]["image"])
+
+
+@torch.no_grad()
+def score_images(model, core, idx, bs: int, device, num_workers: int = 0, desc: str = "eval") -> torch.Tensor:
+    """Logit (float32, CPU) cho core[idx], cùng thứ tự idx; đọc ảnh song song qua DataLoader."""
+    loader = torch.utils.data.DataLoader(EvalImages(core, idx), batch_size=bs, shuffle=False,
+                                         **loader_kwargs(num_workers, device))
+    out = []
+    for x in progress.bar(loader, desc=desc, unit="batch", leave=False):
+        with _autocast(device):
+            out.append(model(x.to(device, non_blocking=True))["logit"].float().cpu())
+    return torch.cat(out) if out else torch.zeros(0)
+
+
 def _autocast(device):
     if torch.device(device).type == "cuda":
         return torch.autocast("cuda", dtype=torch.bfloat16)
@@ -78,16 +112,10 @@ def val_scores(model, cfg: TrainConfig, batch_size: int | None = None, device=No
     core, rows = _val_items(cfg, subset)
     was = model.training
     model.eval()
-    logits = []
     try:
-        for s in progress.bar(range(0, len(rows), bs), desc=f"val {subset}", unit="batch", leave=False):
-            chunk = rows[s:s + bs]
-            x = torch.stack([eval_transform(core[r[0]]["image"]) for r in chunk]).to(device)
-            with _autocast(device):
-                logits.append(model(x)["logit"].float().cpu())
+        lg = score_images(model, core, [r[0] for r in rows], bs, device, cfg.num_workers, f"val {subset}").numpy()
     finally:
         model.train(was)
-    lg = torch.cat(logits).numpy() if logits else np.zeros(0)
     return pd.DataFrame({"video_id": [r[1] for r in rows], "frame_idx": [r[2] for r in rows],
                          "label": [r[3] for r in rows], "logit": lg})
 
@@ -145,7 +173,11 @@ def _set_rng_state(s: dict) -> None:
 
 
 def _seed_worker(worker_id: int, seed: int) -> None:
-    """worker_init_fn cấp module (pickle được khi Windows dùng spawn); bọc bằng functools.partial(seed=...)."""
+    """worker_init_fn cấp module (pickle được khi Windows dùng spawn); bọc bằng functools.partial(seed=...).
+    OpenCV mỗi worker chỉ 1 luồng: song song đã nằm ở số worker, nhiều luồng/worker chỉ giành CPU của nhau."""
+    import cv2
+
+    cv2.setNumThreads(1)
     s = (seed * 1_000_003 + worker_id) % (2**32)
     np.random.seed(s)
     random.seed(s)
@@ -266,11 +298,10 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         ds.set_epoch(epoch)
         batches = _epoch_batches(len(ds), cfg.batch_size, cfg.seed, epoch)[off:]
         loader = torch.utils.data.DataLoader(
-            ds, batch_sampler=batches, num_workers=cfg.num_workers, persistent_workers=False,
-            worker_init_fn=functools.partial(_seed_worker, seed=cfg.seed) if cfg.num_workers else None)
+            ds, batch_sampler=batches, **loader_kwargs(cfg.num_workers, device, cfg.seed))
         for bi, batch in enumerate(loader):
-            x = batch["image"].to(device)
-            tg = {k: v.to(device) for k, v in batch["targets"].items() if torch.is_tensor(v)}
+            x = batch["image"].to(device, non_blocking=True)
+            tg = {k: v.to(device, non_blocking=True) for k, v in batch["targets"].items() if torch.is_tensor(v)}
             acc_vids += [_video_of(ds, i) for i in batches[bi]]
             with _autocast(device):
                 loss, _ = model.head.loss(model(x), tg)

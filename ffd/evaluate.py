@@ -26,14 +26,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-from . import progress
 from .config import TrainConfig, config_hash, file_hash
-from .data.transforms import eval_transform
 from .guards import allow_read
 from .io_utils import write_json_atomic, write_parquet_atomic
 from .model import Detector
 from .rundir import ffpp_hashes
-from .train import _autocast
+from .train import score_images
 
 DATASETS = ("ffpp_test",)
 COLUMNS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
@@ -90,14 +88,8 @@ def _check_run(run: Path, ffpp_root=None, prereg=None) -> tuple[TrainConfig, dic
     return cfg, info, Path(root)
 
 
-@torch.no_grad()
-def _score(model, n: int, get_img, bs: int, device, desc: str = "eval") -> np.ndarray:
-    out = []
-    for s in progress.bar(range(0, n, bs), desc=desc, unit="batch"):
-        x = torch.stack([eval_transform(get_img(i)) for i in range(s, min(n, s + bs))]).to(device)
-        with _autocast(device):
-            out.append(model(x)["logit"].float().cpu())
-    lg = torch.cat(out).numpy().astype(np.float64) if out else np.zeros(0)
+def _score(model, core, bs: int, device, num_workers: int, desc: str = "eval") -> np.ndarray:
+    lg = score_images(model, core, range(len(core)), bs, device, num_workers, desc).numpy().astype(np.float64)
     if not np.isfinite(lg).all():
         raise ValueError("Logit không hữu hạn khi chấm điểm")
     return lg
@@ -109,17 +101,17 @@ def _frame(df: pd.DataFrame, **const) -> pd.DataFrame:
     return df
 
 
-def _ffpp_test(model, ffpp_root, bs, device):
+def _ffpp_test(model, ffpp_root, bs, device, num_workers=0):
     """Trả (df, expected_source). Tập video kỳ vọng lấy từ ffpp_raw/manifest.parquet (gồm video không còn frame
     keep); video kỳ vọng không có frame -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"."""
     from .data import ffpp as D
 
     allow_read("eval", "ffpp_test")
     core = D.FFppRaw(ffpp_root, "test")
-    tg = [core[i]["targets"] for i in range(len(core))]  # đọc ảnh hai lần: chấp nhận cho đơn giản
-    lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval ffpp_test")
-    df = pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
-                       "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
+    lg = _score(model, core, bs, device, num_workers, "eval ffpp_test")
+    df = pd.DataFrame({"video_id": [f"{t}_{s}" for t, _, s in core.items],  # nhãn lấy từ items, không đọc ảnh lần hai
+                       "frame_idx": [int(f) for _, f, _ in core.items],
+                       "label": [0 if s == "real" else 1 for _, _, s in core.items], "logit": lg, "cell": "", "flag": ""})
     expected = D.expected_videos(ffpp_root, "test")
     extra = set(df.video_id) - set(expected)
     if extra:
@@ -153,7 +145,7 @@ def evaluate_run(run, datasets: list[str], *, ffpp_root=None, prereg=None, visio
     model.eval()
     frames, eval_info = [], {}
     for ds in datasets:
-        df, src = _ffpp_test(model, ffpp_root, batch_size, device)
+        df, src = _ffpp_test(model, ffpp_root, batch_size, device, cfg.num_workers)
         eval_info["ffpp_test"] = {"expected_source": src}
         frames.append(_frame(df, dataset=ds))
     df = pd.concat(frames, ignore_index=True)

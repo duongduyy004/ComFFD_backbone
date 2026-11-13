@@ -59,6 +59,7 @@ def test_val_items_reject_test_subset(ffpp_synth, tmp_path):
 
 
 def test_val_metrics_single_class_or_nan_raises():
+
     import pandas as pd
 
     one = pd.DataFrame({"video_id": ["a", "b"], "frame_idx": [0, 0], "label": [0, 0], "logit": [0.1, 0.2]})
@@ -284,3 +285,16 @@ def test_train_progress_bar_does_not_change_results(ffpp_synth, tiny, tmp_path, 
     assert read_jsonl(a / "val_curve.jsonl") == read_jsonl(b / "val_curve.jsonl")
     ba, bb = torch.load(a / "best.pt", weights_only=False), torch.load(b / "best.pt", weights_only=False)
     assert ba["step"] == bb["step"] and all(torch.equal(ba["trainable"][k], bb["trainable"][k]) for k in ba["trainable"])
+
+
+def test_val_scores_workers_match_serial(ffpp_synth, tiny):
+    """Đọc ảnh val qua DataLoader có worker (spawn trên Windows) cho logit và thứ tự y hệt num_workers=0."""
+    import pandas as pd
+
+    from ffd.model import Detector
+
+    torch.manual_seed(0)
+    m = Detector(mkcfg(ffpp_root=ffpp_synth), vision_config=tiny["vision_config"])
+    a = val_scores(m, mkcfg(ffpp_root=ffpp_synth, num_workers=0), batch_size=4, device="cpu")
+    b = val_scores(m, mkcfg(ffpp_root=ffpp_synth, num_workers=2), batch_size=4, device="cpu")
+    pd.testing.assert_frame_equal(a, b)
