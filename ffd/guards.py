@@ -6,9 +6,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from compsynth_ff.guards import LeakageError  # dùng lại cùng lớp lỗi của preprocessing
+__all__ = ["LeakageError", "allow_read", "assert_subset", "val_set_for"]
 
-__all__ = ["LeakageError", "allow_read", "val_set_for"]
+
+class LeakageError(Exception):
+    """Vi phạm quy tắc chống leakage (đọc sai split, train chạm test)."""
+
+
+def assert_subset(subset: str, allowed: set, what: str) -> None:
+    if subset not in allowed:
+        raise LeakageError(f"{what}: subset '{subset}' không được phép (chỉ {sorted(allowed)})")
 
 _TRAIN_ALLOWED = {"ffpp_train", "ffpp_val"}
 _EVAL_ALLOWED = {"ffpp_test"}  # chỉ tập test, không train/val

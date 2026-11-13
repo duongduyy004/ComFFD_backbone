@@ -14,16 +14,30 @@ Venv riêng cho detector (PowerShell, chạy trong thư mục `detector/`):
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-pip install torch --index-url https://download.pytorch.org/whl/cu128   # đổi cuXXX theo driver (nvidia-smi)
-pip install -r requirements.txt
-python -c "import torch, compsynth_ff; print(torch.__version__, torch.cuda.is_available())"
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu128   # cuXXX theo nvidia-smi
+python -m pip install -r requirements.txt
+python -c "import torch, transformers, cv2; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-`requirements.txt` ghim phiên bản đã chạy pytest, gồm cả `-e ../preprocessing` (detector import `compsynth_ff`). torch cài riêng vì bản CUDA lấy từ index pytorch.org. Train và smoke cần CUDA (dòng cuối phải in `True`).
+- `requirements.txt` ghim phiên bản đã chạy pytest. Detector **độc lập với preprocessing** (từ 13/11/2026): không import `compsynth_ff`, không cần cài `../preprocessing`; chỉ đọc dữ liệu trên đĩa theo mục "Hợp đồng dữ liệu" dưới đây.
+- torch cài riêng vì PyPI trên Windows chỉ có bản CPU. Không cài torchvision (ffd không dùng; lệch phiên bản với torch -> lỗi `torchvision::nms`).
+- Dòng cuối phải in `True`. Mỗi terminal mới: activate lại rồi chạy `python -m ffd.cli ...` (không dùng `py`, `py` có thể gọi Python chung của máy).
+
+## Hợp đồng dữ liệu (preprocessing -> detector)
+
+Detector chỉ phụ thuộc vào file trên đĩa dưới `ffpp_root`; đổi format ở preprocessing thì phải sửa `ffd/data/ffpp.py`.
+
+| File | Cột bắt buộc | Ghi chú |
+|---|---|---|
+| `ffpp_raw/manifest.parquet` | `split, method, tid, video_id, frame_idx, keep, path, config_hash` | `method = "real"` là nhãn real; chỉ dòng `keep` được đọc; video không còn frame keep vẫn là video kỳ vọng khi eval |
+| `ffpp_aug/manifest.parquet` | `kind, tid, frame_idx, method, regions, skipped, path, config_hash` | `kind ∈ {rep, seam}`; bỏ dòng `skipped != ""`; mọi `tid` phải có `split == "train"` trong `ffpp_raw` (khác -> `LeakageError`) |
+| ảnh | `path` tương đối với `ffpp_root` | 336×336 BGR; raw là PNG (chưa nén JPEG), aug là JPEG (đã nén một lần) |
+
+Mỗi manifest phải có đúng một giá trị `config_hash` (khác -> `StaleArtifactError`). Detector không tính lại hash này từ config preprocessing; nó chỉ ghi hash vào `run_info.json` lúc train và so lại lúc eval. `jpeg_q` lúc train nằm trong `config.yaml` của detector (mặc định `[75, 95]`) và nên trùng `jpeg_q` của preprocessing.
 
 ## Thứ tự chạy
 
-Cần có sẵn `out_root/ffpp_raw` và `out_root/ffpp_aug` (cách tạo: `../preprocessing/README.md`).
+Cần có sẵn `<ffpp_root>/ffpp_raw` và `<ffpp_root>/ffpp_aug` (`ffpp_root` trong `config.yaml` = `out_root` của preprocessing; cách tạo: `../preprocessing/README.md`).
 
 1. **smoke** (GPU, ViT-L thật): đo VRAM đỉnh và giây/step, chép 16 ảnh `rep` + 16 ảnh `seam` của `ffpp_aug/train` vào `runs/smoke/smoke_samples/` (`rep_XX.jpg`, `seam_XX.jpg`) để duyệt bằng mắt.
    ```bash
@@ -47,14 +61,14 @@ Cần có sẵn `out_root/ffpp_raw` và `out_root/ffpp_aug` (cách tạo: `../pr
       ```
    Một seed không đo được dao động giữa các lần train; trước khi đưa vào paper nên chạy thêm `--set seed=1`, `--set seed=2` cho mỗi arm (không cần train lại seed 0). Đến lúc đó `report` liệt kê seed 1, 2 còn thiếu dưới CẢNH BÁO.
    Dùng `--resume` để tiếp tục run dừng giữa chừng, `--force` để xóa kết quả cũ chạy lại (xóa cả `scores_*.parquet`, `eval_info.json`).
-   `run_info.json` ghi `model_revision`, `model_commit` (commit đã resolve), `ffpp_config_hash`, `ffpp_stage_hash` (stage `aug` của compsynth_ff, gồm cả trường extract + select; dùng cho cả arm `raw`); `eval` kiểm lại và từ chối nếu lệch.
+   `run_info.json` ghi `model_revision`, `model_commit` (commit đã resolve), `ffpp_raw_hash`, `ffpp_aug_hash` (cột `config_hash` của `ffpp_raw/manifest.parquet` và `ffpp_aug/manifest.parquet`, do preprocessing ghi; ghi cả hai cho mọi arm); `eval` đọc lại từ manifest và từ chối nếu lệch.
 5. **eval** cả 2 run (chỉ chạm test ở bước này):
    ```bash
    python -m ffd.cli eval --run runs/aug/raw/seed0 --datasets ffpp_test
    python -m ffd.cli eval --run runs/aug/raw+rep/seed0 --datasets ffpp_test
    ```
    `--datasets` chỉ nhận `ffpp_test`.
-   **Eval trên máy khác máy train:** thêm `--ffpp-config <config FF++ trên máy này>` và `--prereg <prereg trên máy này>`. Đường dẫn (`data_root`, `out_root`, `splits_dir`) được khác; mọi tham số khác và nội dung prereg phải trùng lúc train, lệch -> từ chối.
+   **Eval trên máy khác máy train:** thêm `--ffpp-root <thư mục ffpp_root trên máy này>` và `--prereg <prereg trên máy này>`. Đường dẫn được khác; `config_hash` trong hai manifest và nội dung prereg phải trùng lúc train, lệch -> từ chối.
 6. **report**: `python -m ffd.cli report --runs-root runs` → `main.md`, `delong.csv`, `summary.parquet`. `main.md` có AUC video và AUC frame; CI bootstrap và DeLong (`delong.csv`, phương sai Obuchowski 1997) đều gom cụm theo `tid` video nguồn (ffpp_test). Dưới mục CẢNH BÁO: seed/arm thiếu (arm kỳ vọng `raw`, `raw+rep` vắng hoàn toàn cũng được nêu), run không prereg, config arm lệch ngoài `mode/seed/runs_root/num_workers`, scores không khớp `best.pt` hiện tại.
 
 ## Thanh tiến trình

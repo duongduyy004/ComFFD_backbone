@@ -24,39 +24,36 @@ from .model import Detector
 N_SAMPLES = 16
 
 
-def _dump_samples(ff_cfg, kind: str, out: Path) -> int:
+def _dump_samples(ffpp_root, kind: str, out: Path) -> int:
     """Lưu N_SAMPLES ảnh `kind` (rep | seam) của ffpp_aug/train để xem bằng mắt."""
-    from compsynth_ff.aug_build import aug_root
+    from .data.ffpp import aug_manifest
 
-    man = pd.read_parquet(aug_root(ff_cfg) / "manifest.parquet")
+    man = aug_manifest(ffpp_root)
     paths = sorted(man[(man.kind == kind) & (man.skipped == "")].path)
     if len(paths) < N_SAMPLES:
         raise RuntimeError(f"Chỉ có {len(paths)}/{N_SAMPLES} ảnh '{kind}' trong ffpp_aug")
     for n, i in enumerate(np.linspace(0, len(paths) - 1, N_SAMPLES).astype(int)):
-        shutil.copyfile(Path(ff_cfg.out_root) / paths[i], out / f"{kind}_{n:02d}.jpg")
+        shutil.copyfile(Path(ffpp_root) / paths[i], out / f"{kind}_{n:02d}.jpg")
     return N_SAMPLES
 
 
-def smoke(cfg: TrainConfig, steps: int, *, ff_cfg=None) -> Path:
+def smoke(cfg: TrainConfig, steps: int) -> Path:
     if steps < 2:
         raise ValueError(f"steps phải >= 2 (bỏ step đầu khỏi thời gian), nhận {steps}")
     if not torch.cuda.is_available():
         raise RuntimeError("smoke cần CUDA (ViT-L thật).")
-    from compsynth_ff.config import load_config
-
-    ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
     out = Path(cfg.runs_root) / "smoke"
     samples = out / "smoke_samples"
     samples.mkdir(parents=True, exist_ok=True)
-    _dump_samples(ff_cfg, "rep", samples)
-    _dump_samples(ff_cfg, "seam", samples)
+    _dump_samples(cfg.ffpp_root, "rep", samples)
+    _dump_samples(cfg.ffpp_root, "seam", samples)
 
     device = torch.device("cuda")
     torch.manual_seed(cfg.seed)
     model = Detector(cfg).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-    ds = ArmTrainDataset(ff_cfg, "raw+rep", cfg.rho, cfg.seed)
+    ds = ArmTrainDataset(cfg.ffpp_root, "raw+rep", cfg.rho, cfg.seed, cfg.jpeg_q)
     loader = torch.utils.data.DataLoader(ds, batch_size=cfg.batch_size, shuffle=True,
                                          num_workers=cfg.num_workers, drop_last=True)
     model.train()

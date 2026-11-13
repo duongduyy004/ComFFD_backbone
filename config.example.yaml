@@ -1,5 +1,5 @@
 # Ví dụ config cho ffd.config.load_train_config. Trạng thái: chưa chạy thử.
-ffpp_config: ../preprocessing/config.example.yaml
+ffpp_root: F:/DeepFakeData/compsynth_ff   # = out_root của preprocessing (chứa ffpp_raw/, ffpp_aug/)
 runs_root: runs
 mode: raw            # raw | raw+rep
 seed: 0
@@ -21,5 +21,6 @@ weight_decay: 0.01
 warmup_frac: 0.05
 grad_accum: 1
 num_workers: 4
+jpeg_q: [75, 95]     # JPEG lúc train cho ảnh ffpp_raw; giữ trùng jpeg_q của preprocessing
 selfblend: {hue: 5.0, sat: 0.10, val: 0.10, brightness: 10.0, contrast: 0.10, scale: 0.05, shift: 2.0}
 prereg: null

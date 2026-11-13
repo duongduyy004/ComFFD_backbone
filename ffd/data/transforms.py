@@ -1,13 +1,14 @@
 """Transform ảnh train/eval: JPEG (nếu chưa có), lật ngang, BGR->RGB, chuẩn hóa CLIP.
 
-JPEG gọi qua `compsynth_ff.composite.jpeg` (tra tên lúc gọi, để test đếm được tại một điểm).
+JPEG gọi qua `ffd.io_utils.jpeg` (tra tên lúc gọi, để test đếm được tại một điểm).
 Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
 import numpy as np
 import torch
-from compsynth_ff import composite as _comp
+
+from .. import io_utils as _io
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
@@ -28,7 +29,7 @@ def train_transform(img_bgr: np.ndarray, rng: np.random.Generator, already_jpeg:
     """JPEG q ~ U(jpeg_q) nếu chưa có (real, fake_raw); lật p=0.5. Trả FloatTensor 3x336x336."""
     if not already_jpeg:
         q = int(rng.integers(jpeg_q[0], jpeg_q[1] + 1))
-        img_bgr = _comp.jpeg(img_bgr, q)
+        img_bgr = _io.jpeg(img_bgr, q)
     if rng.random() < 0.5:
         img_bgr = img_bgr[:, ::-1]
     return _to_tensor(img_bgr)

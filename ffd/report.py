@@ -29,8 +29,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from compsynth_ff.io_utils import atomic_write_bytes, write_parquet_atomic
 
+from .io_utils import atomic_write_bytes, write_parquet_atomic
 from .stats import auc, bootstrap_ci, delong_paired_clustered, paired_frames, video_scores
 
 REQUIRED = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",

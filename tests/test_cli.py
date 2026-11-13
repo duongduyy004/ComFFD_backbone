@@ -19,7 +19,7 @@ def test_cli_set_locked_key_rejected(tmp_path):
     cfg = tmp_path / "c.yaml"
     pre = tmp_path / "p.yaml"
     write_prereg(pre)
-    cfg.write_text(f"ffpp_config: x.yaml\nruns_root: {tmp_path.as_posix()}/runs\nmode: raw\nseed: 0\n"
+    cfg.write_text(f"ffpp_root: x\nruns_root: {tmp_path.as_posix()}/runs\nmode: raw\nseed: 0\n"
                    f"total_steps: 1\neval_every: 1\nckpt_every: 1\nprereg: {pre.as_posix()}\n", encoding="utf-8")
     r = run_cli(["train", "--config", str(cfg), "--set", "lr=0.1"])
     assert r.returncode != 0 and "lr" in r.stderr
@@ -36,7 +36,7 @@ def test_parse_set():
 
 def _cfg(tmp_path, prereg=None):
     cfg = tmp_path / "c.yaml"
-    cfg.write_text(f"ffpp_config: x.yaml\nruns_root: {tmp_path.as_posix()}/runs\nmode: raw\nseed: 0\n"
+    cfg.write_text(f"ffpp_root: x\nruns_root: {tmp_path.as_posix()}/runs\nmode: raw\nseed: 0\n"
                    f"total_steps: 1\neval_every: 1\nckpt_every: 1\n" + (f"prereg: {prereg}\n" if prereg else ""),
                    encoding="utf-8")
     return cfg

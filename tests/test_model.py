@@ -15,7 +15,7 @@ from ffd.model import Detector  # noqa: E402
 
 
 def cfg(**kw):
-    base = dict(ffpp_config="x.yaml", runs_root="runs", mode="raw", seed=0, total_steps=1,
+    base = dict(ffpp_root="x", runs_root="runs", mode="raw", seed=0, total_steps=1,
                 eval_every=1, ckpt_every=1, lora_r=4, lora_alpha=8, head="binary",
                 grad_checkpointing=False)
     base.update(kw)
@@ -115,7 +115,7 @@ def test_real_vit_l_loads():
 
 
 def test_detector_checkpointing_follows_cfg(tiny):
-    assert TrainConfig(ffpp_config="x", runs_root="r", mode="raw", seed=0, total_steps=1,
+    assert TrainConfig(ffpp_root="x", runs_root="r", mode="raw", seed=0, total_steps=1,
                        eval_every=1, ckpt_every=1).grad_checkpointing is True
     d = Detector(cfg(grad_checkpointing=True), vision_config=tiny["vision_config"])
     assert d.trunk.base.base_model.model.encoder.gradient_checkpointing is True

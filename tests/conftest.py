@@ -1,27 +1,9 @@
 """Fixture dùng chung cho test ffd. Trạng thái: chưa chạy thử.
 
-`ffpp_synth` dựng dataset đã tiền xử lý từ FF++ TỔNG HỢP (MINH HỌA, không phải dữ liệu thật),
-theo cách của `ready_cfg` trong preprocessing/tests/test_dataset.py. Scope session, chạy một lần (chậm).
+`ffpp_synth` = thư mục ffpp_root TỔNG HỢP (MINH HỌA, không phải FF++ thật) do `synth_ffpp.make_ffpp_root` sinh
+đúng hợp đồng dữ liệu (ffpp_raw/, ffpp_aug/ + manifest). Không import preprocessing. Scope session.
 """
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
-
-_PRE_TESTS = Path(__file__).resolve().parents[2] / "preprocessing" / "tests"
-
-# conftest.py của preprocessing trùng tên module với file này, nên nạp bằng đường dẫn dưới tên riêng.
-if str(_PRE_TESTS) not in sys.path:
-    sys.path.insert(0, str(_PRE_TESTS))
-_spec = importlib.util.spec_from_file_location("pre_conftest", _PRE_TESTS / "conftest.py")
-_pre = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_pre)
-
-fake_reenc = _pre.fake_reenc
-make_cfg = _pre.make_cfg
-write_mp4 = _pre.write_mp4
-synth_root = _pre.synth_root  # fixture (session) của preprocessing
 
 
 def pytest_addoption(parser):
@@ -38,24 +20,11 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(scope="session")
-def ffpp_synth(synth_root, tmp_path_factory):
-    """Config đã chạy extract -> select -> realign -> export-raw -> build-aug trên FF++ tổng hợp (MINH HỌA)."""
-    from synth import FakeDetector, FakeParser
-    from compsynth_ff.aug_build import build_aug
-    from compsynth_ff.extract import run_extract
-    from compsynth_ff.pairs import discover_targets
-    from compsynth_ff.raw_export import export_raw
-    from compsynth_ff.realign import run_realign
-    from compsynth_ff.select_cells import run_select
+def ffpp_synth(tmp_path_factory):
+    """Path tới ffpp_root tổng hợp (MINH HỌA): 8/3/3 video nguồn train/val/test, real + 5 method."""
+    from synth_ffpp import make_ffpp_root
 
-    cfg = make_cfg(synth_root, tmp_path_factory.mktemp("ds"))
-    ts = discover_targets(cfg)
-    run_extract(cfg, ts, FakeDetector, FakeParser, reencoder=fake_reenc)
-    run_select(cfg)
-    run_realign(cfg, ts, FakeDetector)
-    export_raw(cfg, ts, FakeDetector)
-    build_aug(cfg, ts, FakeParser)
-    return cfg
+    return make_ffpp_root(tmp_path_factory.mktemp("ffpp_root"))
 
 
 @pytest.fixture

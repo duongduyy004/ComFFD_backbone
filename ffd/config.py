@@ -24,9 +24,9 @@ PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_
 LORA_KEYS = ("lora_r", "lora_alpha", "lora_dropout", "lora_targets")
 # R3: file prereg phải ghi ĐỦ các khóa này (thiếu -> ValueError), để không khóa nào lấy ngầm từ config.yaml.
 PREREG_REQUIRED = PREREG_KEYS + LORA_KEYS
-_PATH_FIELDS = ("ffpp_config", "runs_root", "prereg")
+_PATH_FIELDS = ("ffpp_root", "runs_root", "prereg")
 # Không băm đường dẫn (khác nhau giữa máy/OS); nội dung prereg đã có prereg_hash trong run_info.
-_HASH_SKIP = ("runs_root", "num_workers", "ffpp_config", "prereg")
+_HASH_SKIP = ("runs_root", "num_workers", "ffpp_root", "prereg")
 
 
 def _is_locked(k: str) -> bool:
@@ -35,7 +35,7 @@ def _is_locked(k: str) -> bool:
 
 @dataclass(frozen=True)
 class TrainConfig:
-    ffpp_config: Path
+    ffpp_root: Path  # thư mục output của preprocessing (chứa ffpp_raw/, ffpp_aug/)
     runs_root: Path
     mode: Literal["raw", "raw+rep"]
     seed: int
@@ -58,6 +58,7 @@ class TrainConfig:
     warmup_frac: float = 0.05
     grad_accum: int = 1
     num_workers: int = 4
+    jpeg_q: tuple = (75, 95)  # JPEG lúc train cho ảnh gốc ffpp_raw; nên trùng jpeg_q của preprocessing (ffpp_aug)
     selfblend: dict = field(default_factory=lambda: dict(DEFAULT_T))
     prereg: Path | None = None
 
@@ -94,7 +95,7 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
     for k in _PATH_FIELDS:
         if d.get(k) is not None:
             d[k] = Path(d[k])
-    for k in ("lora_targets", "tap_layers"):
+    for k in ("lora_targets", "tap_layers", "jpeg_q"):
         if k in d:
             d[k] = tuple(d[k])
     if "selfblend" in d:

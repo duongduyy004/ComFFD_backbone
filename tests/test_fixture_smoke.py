@@ -2,5 +2,5 @@
 
 
 def test_ffpp_synth_builds(ffpp_synth):
-    assert (ffpp_synth.out_root / "ffpp_raw" / "manifest.parquet").exists()
-    assert (ffpp_synth.out_root / "ffpp_aug" / "manifest.parquet").exists()
+    assert (ffpp_synth / "ffpp_raw" / "manifest.parquet").exists()
+    assert (ffpp_synth / "ffpp_aug" / "manifest.parquet").exists()

@@ -4,8 +4,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from compsynth_ff import composite as comp_mod  # noqa: E402
-from compsynth_ff.dataset import AugCore  # noqa: E402
+from ffd import io_utils as comp_mod  # noqa: E402
+from ffd.data.ffpp import FFppAug as AugCore  # noqa: E402
 from ffd.data.arms import ArmTrainDataset, build_train_dataset  # noqa: E402
 from ffd.data.transforms import eval_transform, train_transform  # noqa: E402
 
@@ -79,11 +79,10 @@ def test_deterministic_per_epoch(ffpp_synth):
 
 
 def test_train_only(ffpp_synth):
-    from compsynth_ff.select_cells import load_frames
+    from ffd.data.ffpp import raw_manifest
 
     ds = ArmTrainDataset(ffpp_synth, "raw+rep", 0.5, 0)
-    fr = load_frames(ffpp_synth)
-    sub = fr.drop_duplicates("tid").set_index("tid").subset
+    sub = raw_manifest(ffpp_synth).drop_duplicates("tid").set_index("tid").split
     assert {sub[t] for t, _ in ds.real_frames} == {"train"}
 
 
@@ -116,10 +115,11 @@ def test_flip_half():
 def test_build_train_dataset_arm(ffpp_synth, tmp_path):
     from ffd.config import TrainConfig
 
-    cfg = TrainConfig(ffpp_config=tmp_path / "a.yaml", runs_root=tmp_path, mode="raw+rep", seed=3,
-                      total_steps=1, eval_every=1, ckpt_every=1, rho=0.25)
-    ds = build_train_dataset(cfg, ff_cfg=ffpp_synth)
+    cfg = TrainConfig(ffpp_root=ffpp_synth, runs_root=tmp_path, mode="raw+rep", seed=3,
+                      total_steps=1, eval_every=1, ckpt_every=1, rho=0.25, jpeg_q=(80, 90))
+    ds = build_train_dataset(cfg)
     assert isinstance(ds, ArmTrainDataset) and ds.rho == 0.25 and ds.seed == 3 and ds.arm == "raw+rep"
+    assert ds.jpeg_q == (80, 90)
 
 
 def test_wrong_size_raises():

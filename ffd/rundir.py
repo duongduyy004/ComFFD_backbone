@@ -8,11 +8,8 @@ import dataclasses
 import json
 from pathlib import Path
 
-from compsynth_ff.io_utils import write_json_atomic
-
 from .config import TrainConfig, config_hash, file_hash
-
-FFPP_STAGE = "aug"  # stage cuối của compsynth_ff dùng cho train (gồm cả trường extract + select + aug)
+from .io_utils import write_json_atomic
 
 
 def run_dir(cfg: TrainConfig) -> Path:
@@ -62,32 +59,15 @@ def _gpu():
         return None
 
 
-FFPP_PATH_FIELDS = ("data_root", "out_root", "splits_dir")  # khác nhau giữa máy/ổ đĩa: không băm
+def ffpp_hashes(cfg: TrainConfig) -> dict:
+    """Định danh artifact tiền xử lý: config_hash ghi trong ffpp_raw/ và ffpp_aug/manifest.parquet dưới cfg.ffpp_root
+    (preprocessing tự ghi; detector không tính lại). Manifest không có -> None."""
+    from .data.ffpp import manifest_hashes
+
+    return manifest_hashes(cfg.ffpp_root)
 
 
-def ffpp_config_hash(ff_cfg) -> str:
-    """R1: hash các trường ĐÃ PARSE của Config FF++, bỏ trường đường dẫn. Đổi máy/ổ đĩa/thư mục không đổi hash;
-    đổi bất kỳ tham số nào (kể cả trường mới thêm sau này) thì đổi hash."""
-    import hashlib
-
-    d = {k: v for k, v in dataclasses.asdict(ff_cfg).items() if k not in FFPP_PATH_FIELDS}
-    s = json.dumps(d, sort_keys=True, default=str)
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
-
-
-def ffpp_hashes(cfg: TrainConfig, ff_cfg) -> dict:
-    """Định danh artifact tiền xử lý: `ffpp_config_hash(ff_cfg)` và stage_hash(ff_cfg, "aug").
-    ff_cfg None -> nạp từ cfg.ffpp_config nếu file tồn tại; không có thì cả hai là None."""
-    from compsynth_ff.config import load_config, stage_hash
-
-    if ff_cfg is None and cfg.ffpp_config is not None and Path(cfg.ffpp_config).is_file():
-        ff_cfg = load_config(Path(cfg.ffpp_config))
-    if ff_cfg is None:
-        return {"ffpp_config_hash": None, "ffpp_stage_hash": None}
-    return {"ffpp_config_hash": ffpp_config_hash(ff_cfg), "ffpp_stage_hash": stage_hash(ff_cfg, FFPP_STAGE)}
-
-
-def write_run_info(dir, cfg: TrainConfig, extra: dict, ff_cfg=None) -> None:
+def write_run_info(dir, cfg: TrainConfig, extra: dict) -> None:
     """Ghi run_info.json. extra có thể chứa model_commit (commit HF đã resolve), split_file (đường dẫn để băm), ..."""
     extra = dict(extra or {})
     split_file = extra.pop("split_file", None)
@@ -99,7 +79,7 @@ def write_run_info(dir, cfg: TrainConfig, extra: dict, ff_cfg=None) -> None:
         "model_name": cfg.model_name,
         "model_revision": cfg.model_revision,
         "model_commit": extra.pop("model_commit", None),
-        **ffpp_hashes(cfg, ff_cfg),
+        **ffpp_hashes(cfg),
         "gpu": _gpu(),
         "seed": cfg.seed,
         "mode": cfg.mode,

@@ -72,13 +72,8 @@ def _cmd_eval(a):
     bad = [x for x in ds if x not in EVAL_DATASETS]
     if bad or not ds:
         raise SystemExit(f"--datasets không hợp lệ {bad}; chỉ chấp nhận {list(EVAL_DATASETS)}")
-    ff_cfg = None
-    if a.ffpp_config:
-        from compsynth_ff.config import load_config
-
-        ff_cfg = load_config(Path(a.ffpp_config))
     try:
-        print(evaluate_run(a.run, ds, ff_cfg=ff_cfg, prereg=a.prereg))
+        print(evaluate_run(a.run, ds, ffpp_root=a.ffpp_root, prereg=a.prereg))
     except ValueError as e:
         raise SystemExit(f"Lỗi eval: {e}") from e
 
@@ -121,8 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     e = sp.add_parser("eval", parents=[common])
     e.add_argument("--run", required=True)
     e.add_argument("--datasets", required=True, help=",".join(EVAL_DATASETS))
-    e.add_argument("--ffpp-config", default=None,
-                   help="config FF++ trên máy eval (khác máy train); tham số phải trùng lúc train, đường dẫn được khác")
+    e.add_argument("--ffpp-root", default=None,
+                   help="thư mục output preprocessing trên máy eval (khác máy train); manifest phải trùng hash lúc train")
     e.add_argument("--prereg", default=None, help="đường dẫn prereg trên máy eval; nội dung phải trùng lúc train")
     e.set_defaults(fn=_cmd_eval)
 

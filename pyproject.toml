@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Deepfake detector: CLIP ViT-L/14-336 + LoRA (CompFFD)"
 requires-python = ">=3.10"
 dependencies = [
-  "compsynth-ff", "torch", "transformers", "peft", "numpy", "scipy",
-  "pandas", "pyarrow", "scikit-learn", "pyyaml", "tqdm",
+  "torch", "transformers", "peft", "numpy", "scipy", "pandas", "pyarrow",
+  "scikit-learn", "opencv-python-headless", "pyyaml", "tqdm",
 ]
 
 [project.optional-dependencies]

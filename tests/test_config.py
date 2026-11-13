@@ -8,7 +8,7 @@ from ffd.config import DEFAULT_T
 from ffd.config import config_hash, file_hash, load_train_config
 from prereg_util import full_prereg
 
-BASE = dict(ffpp_config="ffpp.yaml", runs_root="runs", mode="raw", seed=0,
+BASE = dict(ffpp_root="ffpp_out", runs_root="runs", mode="raw", seed=0,
             total_steps=100, eval_every=10, ckpt_every=50)
 
 
@@ -79,9 +79,9 @@ def test_example_yaml_valid():
 
 
 def test_config_hash_ignores_path_spelling(tmp_path):
-    a = load_train_config(write_yaml(tmp_path), overrides={"ffpp_config": Path("a/b.yaml")})
-    b = load_train_config(write_yaml(tmp_path), overrides={"ffpp_config": Path("C:/other/root/b.yaml")})
-    c = load_train_config(write_yaml(tmp_path), overrides={"ffpp_config": Path("/mnt/x/b.yaml")})
+    a = load_train_config(write_yaml(tmp_path), overrides={"ffpp_root": Path("a/b")})
+    b = load_train_config(write_yaml(tmp_path), overrides={"ffpp_root": Path("C:/other/root/b")})
+    c = load_train_config(write_yaml(tmp_path), overrides={"ffpp_root": Path("/mnt/x/b")})
     import dataclasses
     d = dataclasses.replace(a, prereg=Path("p/q.yaml"))
     e = dataclasses.replace(a, prereg=Path("/vol/prereg.yaml"))

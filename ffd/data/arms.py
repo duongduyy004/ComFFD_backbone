@@ -1,7 +1,7 @@
 """Dataset train theo arm (spec augmentation can_bang_duong_noi §4).
 
-- Ảnh gốc: `ffpp_raw/train` (FFppRawCore) — real và 5 fake, mỗi video căn độc lập.
-- Ảnh tăng cường (chỉ arm raw+rep): `ffpp_aug/train` (AugCore) — rep (nhãn fake), seam (nhãn real).
+- Ảnh gốc: `ffpp_raw/train` (FFppRaw) — real và 5 fake, mỗi video căn độc lập.
+- Ảnh tăng cường (chỉ arm raw+rep): `ffpp_aug/train` (FFppAug) — rep (nhãn fake), seam (nhãn real).
 real:fake = 1:1 (mục chẵn real, lẻ fake). ρ cho cả hai lớp.
 Ảnh gốc nén JPEG một lần trong train_transform; ảnh tăng cường đã nén khi tạo (already_jpeg=True).
 Frame không có đủ cả rep lẫn seam → dùng ảnh gốc, `fallback=True`, giữ nguồn đã bốc (cùng tập frame cho hai lớp).
@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from compsynth_ff.composite import item_seed
-from compsynth_ff.config import load_config
-from compsynth_ff.dataset import AugCore, FFppRawCore
 
+from ..io_utils import item_seed
+from .ffpp import FFppAug, FFppRaw
 from .recipe import ARMS, draw_real_source, draw_source, sample_item
 from .transforms import train_transform
 
@@ -22,18 +21,18 @@ MAX_TRIES = 50
 
 
 class ArmTrainDataset(torch.utils.data.Dataset):
-    def __init__(self, ff_cfg, arm: str, rho: float, seed: int):
+    def __init__(self, ffpp_root, arm: str, rho: float, seed: int, jpeg_q: tuple = (75, 95)):
         if arm not in ARMS:
             raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
-        self.ff_cfg, self.arm, self.rho, self.seed = ff_cfg, arm, float(rho), int(seed)
-        self.raw = FFppRawCore(ff_cfg, "train")  # guard: chỉ video train
+        self.arm, self.rho, self.seed, self.jpeg_q = arm, float(rho), int(seed), tuple(jpeg_q)
+        self.raw = FFppRaw(ffpp_root, "train")  # guard: chỉ video train
         self._idx = {it: i for i, it in enumerate(self.raw.items)}
         self.real_frames = sorted((t, f) for t, f, m in self.raw.items if m == "real")
         self._methods: dict = {}
         for t, f, m in self.raw.items:
             if m != "real":
                 self._methods.setdefault((t, f), []).append(m)
-        self.aug = AugCore(ff_cfg) if arm == "raw+rep" else None
+        self.aug = FFppAug(ffpp_root) if arm == "raw+rep" else None
         self.epoch = 0
 
     def __len__(self) -> int:
@@ -46,7 +45,7 @@ class ArmTrainDataset(torch.utils.data.Dataset):
         return self.raw[self._idx[(t, f, m)]]["image"]
 
     def _item(self, img_bgr, rng, already_jpeg, L0, source, method, region, fallback=False):
-        x = train_transform(img_bgr, rng, already_jpeg, tuple(self.ff_cfg.jpeg_q))
+        x = train_transform(img_bgr, rng, already_jpeg, self.jpeg_q)
         return {"image": x, "targets": {"L0": L0, "source": source, "method": method, "region": region,
                                         "fallback": bool(fallback)}}
 
@@ -86,8 +85,6 @@ class ArmTrainDataset(torch.utils.data.Dataset):
         return self._item(self._raw_img(t, f, m), rng, False, 1, "raw", m, "")
 
 
-def build_train_dataset(cfg, ff_cfg=None):
-    """arm -> ArmTrainDataset. `ff_cfg` mặc định nạp từ cfg.ffpp_config."""
-    if ff_cfg is None:
-        ff_cfg = load_config(cfg.ffpp_config)
-    return ArmTrainDataset(ff_cfg, cfg.mode, cfg.rho, cfg.seed)
+def build_train_dataset(cfg):
+    """arm -> ArmTrainDataset trên cfg.ffpp_root."""
+    return ArmTrainDataset(cfg.ffpp_root, cfg.mode, cfg.rho, cfg.seed, cfg.jpeg_q)

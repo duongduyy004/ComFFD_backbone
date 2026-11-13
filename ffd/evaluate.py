@@ -5,12 +5,12 @@ Quy ước:
 - `datasets` ⊆ {ffpp_test}; `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn.
 - Chỉ nạp `best.pt` (qua `Detector.load_trainable`); cần `done.flag`; nếu run có prereg thì hash trong
   run_info.json phải bằng `file_hash` của file prereg HIỆN TẠI (sai/mất file -> ValueError).
-- Artifact tiền xử lý phải trùng lúc train: `ffpp_config_hash` (Config FF++ đã parse, bỏ đường dẫn) và `ffpp_stage_hash`
-  (stage_hash(ff_cfg, "aug")) tính lại từ ff_cfg dùng khi eval; lệch -> ValueError. Commit HF của trunk dựng lại
+- Artifact tiền xử lý phải trùng lúc train: `ffpp_raw_hash`, `ffpp_aug_hash` (config_hash trong hai manifest dưới
+  ffpp_root dùng khi eval) bằng giá trị trong run_info; lệch -> ValueError. Commit HF của trunk dựng lại
   phải bằng `model_commit` trong run_info.
 - Detector dựng lại từ `run_info.json["config"]` (cấu hình đầy đủ do `rundir.write_run_info` ghi; run cũ không có
   khóa này -> ValueError, không đoán).
-- ffpp_test: FFppRawCore(test) đọc ffpp_raw/test; tập video kỳ vọng = `expected_videos(cfg, "test")` từ
+- ffpp_test: FFppRaw(test) đọc ffpp_raw/test; tập video kỳ vọng = `expected_videos(ffpp_root, "test")` từ
   ffpp_raw/manifest.parquet (expected_source="ffpp_raw_manifest" ghi vào run/eval_info.json), video_id = "{tid}_{src}",
   cell = "". Video kỳ vọng không còn frame keep -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame";
   video chấm được mà không thuộc tập kỳ vọng -> ValueError.
@@ -18,19 +18,19 @@ Trạng thái: chưa chạy thử.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-from compsynth_ff.config import load_config
-from compsynth_ff.io_utils import write_json_atomic, write_parquet_atomic
 
 from . import progress
 from .config import TrainConfig, config_hash, file_hash
 from .data.transforms import eval_transform
 from .guards import allow_read
+from .io_utils import write_json_atomic, write_parquet_atomic
 from .model import Detector
 from .rundir import ffpp_hashes
 from .train import _autocast
@@ -45,18 +45,20 @@ def _cfg_from_info(info: dict) -> TrainConfig:
     if not d:
         raise ValueError("run_info.json không có khóa 'config' (run cũ); không dựng lại được Detector")
     d = dict(d)
-    for k in ("ffpp_config", "runs_root", "prereg"):
+    for k in ("ffpp_root", "runs_root", "prereg"):
         if d.get(k) is not None:
             d[k] = Path(d[k])
     for k in ("lora_targets", "tap_layers"):
         d[k] = tuple(d.get(k, ()))
+    if "jpeg_q" in d:
+        d["jpeg_q"] = tuple(d["jpeg_q"])
     return TrainConfig(**d)
 
 
-def _check_run(run: Path, ff_cfg=None, prereg=None) -> tuple[TrainConfig, dict, object]:
-    """Kiểm run (done, best.pt, prereg, config_hash, artifact tiền xử lý); trả (cfg, info, ff_cfg).
-    ff_cfg None -> nạp từ cfg.ffpp_config (sau các kiểm tra rẻ). `prereg` (đường dẫn) thay cho cfg.prereg khi
-    eval trên máy khác máy train; nội dung vẫn phải trùng prereg_hash."""
+def _check_run(run: Path, ffpp_root=None, prereg=None) -> tuple[TrainConfig, dict, Path]:
+    """Kiểm run (done, best.pt, prereg, config_hash, artifact tiền xử lý); trả (cfg, info, ffpp_root).
+    ffpp_root None -> cfg.ffpp_root. `ffpp_root`, `prereg` (đường dẫn) thay cho giá trị lúc train khi eval trên máy
+    khác; nội dung vẫn phải trùng (manifest hash, prereg_hash)."""
     if not (run / "done.flag").exists():
         raise ValueError(f"Run chưa xong (thiếu done.flag): {run}")
     if not (run / "best.pt").exists():
@@ -75,18 +77,17 @@ def _check_run(run: Path, ff_cfg=None, prereg=None) -> tuple[TrainConfig, dict, 
             raise ValueError(f"Hash prereg khác lúc train ({info['prereg_hash']} != {now}); không chấm điểm")
     if config_hash(cfg) != info.get("config_hash"):
         raise ValueError(f"config dựng lại có hash {config_hash(cfg)} != config_hash trong run_info {info.get('config_hash')}")
-    for k in ("ffpp_config_hash", "ffpp_stage_hash"):
+    for k in ("ffpp_raw_hash", "ffpp_aug_hash"):
         if k not in info:
             raise ValueError(f"run_info.json thiếu {k} (run cũ); không xác định được artifact tiền xử lý")
-    if ff_cfg is None:
-        if cfg.ffpp_config is None or not Path(cfg.ffpp_config).is_file():
-            raise ValueError(f"Không thấy file config FF++ {cfg.ffpp_config} (khác máy: dùng --ffpp-config)")
-        ff_cfg = load_config(cfg.ffpp_config)
-    now = ffpp_hashes(cfg, ff_cfg)
+    root = Path(ffpp_root) if ffpp_root is not None else cfg.ffpp_root
+    if root is None or not (Path(root) / "ffpp_raw" / "manifest.parquet").is_file():
+        raise ValueError(f"Không thấy {root}/ffpp_raw/manifest.parquet (khác máy: dùng --ffpp-root)")
+    now = ffpp_hashes(dataclasses.replace(cfg, ffpp_root=Path(root)))
     for k, v in now.items():
         if v != info[k]:
             raise ValueError(f"{k} khác lúc train ({info[k]} != {v}): artifact tiền xử lý FF++ đã đổi; không chấm điểm")
-    return cfg, info, ff_cfg
+    return cfg, info, Path(root)
 
 
 @torch.no_grad()
@@ -108,18 +109,18 @@ def _frame(df: pd.DataFrame, **const) -> pd.DataFrame:
     return df
 
 
-def _ffpp_test(model, ff_cfg, bs, device):
+def _ffpp_test(model, ffpp_root, bs, device):
     """Trả (df, expected_source). Tập video kỳ vọng lấy từ ffpp_raw/manifest.parquet (gồm video không còn frame
     keep); video kỳ vọng không có frame -> một dòng frame_idx=-1, logit=0.0, flag="no_usable_frame"."""
-    from compsynth_ff.dataset import FFppRawCore, expected_videos
+    from .data import ffpp as D
 
     allow_read("eval", "ffpp_test")
-    core = FFppRawCore(ff_cfg, "test")
+    core = D.FFppRaw(ffpp_root, "test")
     tg = [core[i]["targets"] for i in range(len(core))]  # đọc ảnh hai lần: chấp nhận cho đơn giản
     lg = _score(model, len(core), lambda i: core[i]["image"], bs, device, "eval ffpp_test")
     df = pd.DataFrame({"video_id": [t["video_id"] for t in tg], "frame_idx": [int(t["frame_idx"]) for t in tg],
                        "label": [int(t["L0"]) for t in tg], "logit": lg, "cell": "", "flag": ""})
-    expected = expected_videos(ff_cfg, "test")
+    expected = D.expected_videos(ffpp_root, "test")
     extra = set(df.video_id) - set(expected)
     if extra:
         raise ValueError(f"{len(extra)} video được chấm không thuộc tập test kỳ vọng (ví dụ {sorted(extra)[0]!r})")
@@ -130,7 +131,7 @@ def _ffpp_test(model, ff_cfg, bs, device):
     return df, "ffpp_raw_manifest"
 
 
-def evaluate_run(run, datasets: list[str], *, ff_cfg=None, prereg=None, vision_config=None,
+def evaluate_run(run, datasets: list[str], *, ffpp_root=None, prereg=None, vision_config=None,
                  device=None, batch_size: int = 16) -> Path:
     """Chấm điểm best.pt của `run` trên `datasets`, ghi `run/scores_{dataset}.parquet` mỗi dataset; trả thư mục run."""
     run = Path(run)
@@ -139,7 +140,7 @@ def evaluate_run(run, datasets: list[str], *, ff_cfg=None, prereg=None, vision_c
         raise ValueError(f"datasets không hợp lệ {bad}; chỉ {list(DATASETS)}")
     if not datasets:
         raise ValueError("datasets rỗng")
-    cfg, info, ff_cfg = _check_run(run, ff_cfg, prereg)
+    cfg, info, ffpp_root = _check_run(run, ffpp_root, prereg)
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     # Seed như train() trước khi dựng model: với `vision_config` ngẫu nhiên (test) phần đóng băng không nằm trong
     # best.pt nên phải tái tạo y hệt; với CLIP thật (from_pretrained) không ảnh hưởng.
@@ -152,7 +153,7 @@ def evaluate_run(run, datasets: list[str], *, ff_cfg=None, prereg=None, vision_c
     model.eval()
     frames, eval_info = [], {}
     for ds in datasets:
-        df, src = _ffpp_test(model, ff_cfg, batch_size, device)
+        df, src = _ffpp_test(model, ffpp_root, batch_size, device)
         eval_info["ffpp_test"] = {"expected_source": src}
         frames.append(_frame(df, dataset=ds))
     df = pd.concat(frames, ignore_index=True)

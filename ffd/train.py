@@ -8,8 +8,8 @@ Quy ước:
 - Thứ tự trong một step: cập nhật -> train_log -> val (nếu eval_every) -> last.pt (nếu ckpt_every).
   Step cuối luôn val và lưu last.pt.
 - Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. `allow_cpu=True` chỉ dùng trong test
-  (CPU, không autocast). `ff_cfg` cho phép test truyền Config tổng hợp thay vì nạp từ cfg.ffpp_config.
-- Val: FFppRawCore(val) cho mọi arm. `allow_read("train", ...)` gọi ngay trước khi mở từng tập.
+  (CPU, không autocast). Dữ liệu đọc từ cfg.ffpp_root.
+- Val: FFppRaw(val) cho mọi arm. `allow_read("train", ...)` gọi ngay trước khi mở từng tập.
 - grad_accum: một step luôn gồm đúng `grad_accum` micro-batch, kể cả khi vượt biên epoch (bộ tích lũy nằm
   ngoài vòng epoch) nên vị trí resume = step * grad_accum micro-batch là chính xác.
 - Resume: best.pt mồ côi (step > last.step) được ghi lại từ `best_state` trong last.pt (hoặc xóa nếu chưa có best).
@@ -29,14 +29,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from compsynth_ff.config import load_config
-from compsynth_ff.io_utils import write_json_atomic
 
 from . import progress
 from .config import TrainConfig
 from .data.arms import build_train_dataset
 from .data.transforms import eval_transform
 from .guards import allow_read
+from .io_utils import write_json_atomic
 from .model import Detector
 from .rundir import prepare_run_dir, run_dir, write_run_info  # noqa: F401  (run_dir cho test/tiện ích)
 from .stats import auc, video_scores
@@ -54,12 +53,12 @@ def is_better(new, best, tol: float = 1e-4) -> bool:
 
 
 # ---------------------------------------------------------------- val
-def _val_items(cfg: TrainConfig, ff_cfg, subset: str = "val"):
+def _val_items(cfg: TrainConfig, subset: str = "val"):
     """Trả (core, rows); rows = list (index trong core, video_id, frame_idx, label)."""
-    from compsynth_ff import dataset as D
+    from .data import ffpp as D
 
     allow_read("train", f"ffpp_{subset}")
-    core = D.FFppRawCore(ff_cfg, subset)
+    core = D.FFppRaw(cfg.ffpp_root, subset)
     rows = [(i, f"{t}_{s}", int(f), 0 if s == "real" else 1) for i, (t, f, s) in enumerate(core.items)]
     return core, rows
 
@@ -71,12 +70,12 @@ def _autocast(device):
 
 
 @torch.no_grad()
-def val_scores(model, cfg: TrainConfig, ff_cfg, batch_size: int | None = None, device=None,
+def val_scores(model, cfg: TrainConfig, batch_size: int | None = None, device=None,
                subset: str = "val") -> pd.DataFrame:
     """[video_id, frame_idx, label, logit]; model trở về chế độ cũ (train/eval) sau khi tính."""
     device = torch.device(device) if device is not None else next(model.parameters()).device
     bs = batch_size or cfg.batch_size
-    core, rows = _val_items(cfg, ff_cfg, subset)
+    core, rows = _val_items(cfg, subset)
     was = model.training
     model.eval()
     logits = []
@@ -194,13 +193,12 @@ def _reconcile_best(path: Path, step: int, best, best_state) -> None:
 
 # ---------------------------------------------------------------- train
 def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision_config=None,
-          ff_cfg=None, allow_cpu: bool = False, log_every: int = 20, device=None) -> Path:
+          allow_cpu: bool = False, log_every: int = 20, device=None) -> Path:
     """Huấn luyện một run, trả thư mục run. Không CUDA và allow_cpu=False -> RuntimeError."""
     has_cuda = torch.cuda.is_available()
     if not has_cuda and not allow_cpu:
         raise RuntimeError("Không có CUDA: train cần GPU (allow_cpu=True chỉ dành cho test).")
     device = torch.device(device or ("cuda" if has_cuda else "cpu"))
-    ff_cfg = ff_cfg if ff_cfg is not None else load_config(cfg.ffpp_config)
     allow_read("train", "ffpp_train")
 
     d = prepare_run_dir(cfg, resume=resume, force=force)
@@ -213,7 +211,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     model = Detector(cfg, vision_config=vision_config).to(device)
     commit = model.trunk.commit
     if not resume:  # ghi sau khi dựng model để có commit HF đã resolve
-        write_run_info(d, cfg, {"model_commit": commit}, ff_cfg=ff_cfg)
+        write_run_info(d, cfg, {"model_commit": commit})
     else:
         info = json.loads((d / "run_info.json").read_text(encoding="utf-8")) if (d / "run_info.json").exists() else {}
         if info.get("model_commit") != commit:
@@ -235,7 +233,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         _truncate_jsonl(d / "val_curve.jsonl", step)
         _truncate_jsonl(d / "train_log.jsonl", step)
 
-    ds = build_train_dataset(cfg, ff_cfg=ff_cfg)
+    ds = build_train_dataset(cfg)
     accum = cfg.grad_accum
     per_epoch = len(_epoch_batches(len(ds), cfg.batch_size, cfg.seed, 0))
     if per_epoch < 1:
@@ -245,7 +243,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
 
     def do_val(s: int):
         nonlocal best, best_state
-        m = _val_metrics(val_scores(model, cfg, ff_cfg, device=device))
+        m = _val_metrics(val_scores(model, cfg, device=device))
         _append_jsonl(d / "val_curve.jsonl", {"step": s, **m})
         if is_better((m["auc_video"], m["bce"]), None if best is None else (best["auc_video"], best["bce"])):
             best = {"step": s, "auc_video": m["auc_video"], "bce": m["bce"]}

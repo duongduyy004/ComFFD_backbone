@@ -1,4 +1,5 @@
 """Test vòng train. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA), CLIP tí hon ngẫu nhiên."""
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ from ffd.train import is_better, train, val_scores  # noqa: E402
 
 
 def mkcfg(**kw):
-    d = dict(ffpp_config=Path("unused.yaml"), runs_root=Path("runs"), mode="raw", seed=0, total_steps=12,
+    d = dict(ffpp_root=Path("unused"), runs_root=Path("runs"), mode="raw", seed=0, total_steps=12,
              eval_every=4, ckpt_every=4, batch_size=4, num_workers=0, grad_checkpointing=False,
              lora_r=4, lora_alpha=8)
     d.update(kw)
@@ -22,7 +23,8 @@ def mkcfg(**kw):
 
 
 def run(cfg, ffpp, tiny, **kw):
-    return train(cfg, vision_config=tiny["vision_config"], ff_cfg=ffpp, allow_cpu=True, log_every=1, **kw)
+    cfg = dataclasses.replace(cfg, ffpp_root=ffpp)
+    return train(cfg, vision_config=tiny["vision_config"], allow_cpu=True, log_every=1, **kw)
 
 
 def read_jsonl(p):
@@ -53,7 +55,7 @@ def test_train_cannot_read_test():
 
 def test_val_items_reject_test_subset(ffpp_synth, tmp_path):
     with pytest.raises(LeakageError):
-        T._val_items(mkcfg(), ffpp_synth, "test")
+        T._val_items(mkcfg(ffpp_root=ffpp_synth), "test")
 
 
 def test_val_metrics_single_class_or_nan_raises():
@@ -74,7 +76,7 @@ def test_val_set_for():
 def test_missing_cuda_raises(ffpp_synth, tiny, tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="CUDA"):
-        train(mkcfg(runs_root=tmp_path), vision_config=tiny["vision_config"], ff_cfg=ffpp_synth)
+        train(mkcfg(runs_root=tmp_path, ffpp_root=ffpp_synth), vision_config=tiny["vision_config"])
 
 
 def test_train_writes_artifacts(ffpp_synth, tiny, tmp_path):
@@ -94,7 +96,7 @@ def test_val_scores_raw(ffpp_synth, tiny):
     from ffd.model import Detector
 
     m = Detector(mkcfg(), vision_config=tiny["vision_config"])
-    df = val_scores(m, mkcfg(), ffpp_synth, batch_size=4, device="cpu")
+    df = val_scores(m, mkcfg(ffpp_root=ffpp_synth), batch_size=4, device="cpu")
     assert list(df.columns) == ["video_id", "frame_idx", "label", "logit"]
     assert set(df.label) == {0, 1} and len(df) > 0 and df.logit.notna().all()
 
@@ -262,7 +264,7 @@ def test_odd_batch_size_rejected_by_config(tmp_path):
     from ffd.config import load_train_config
 
     y = tmp_path / "c.yaml"
-    y.write_text("ffpp_config: x.yaml\nruns_root: r\nmode: raw\nseed: 0\ntotal_steps: 1\neval_every: 1\n"
+    y.write_text("ffpp_root: x\nruns_root: r\nmode: raw\nseed: 0\ntotal_steps: 1\neval_every: 1\n"
                  "ckpt_every: 1\nbatch_size: 7\n", encoding="utf-8")
     with pytest.raises(ValueError, match="chẵn"):
         load_train_config(y)
