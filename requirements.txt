@@ -2,8 +2,9 @@
 # Phiên bản ghim = bản đã chạy pytest local (CPU, Python 3.15). Độc lập với preprocessing từ 13/11/2026:
 # detector chỉ đọc ffpp_raw/, ffpp_aug/ trên đĩa, không import compsynth_ff.
 #
-# torch KHÔNG nằm ở đây: bản CUDA phải cài riêng từ index pytorch.org, TRƯỚC file này, ví dụ
-#   pip install torch --index-url https://download.pytorch.org/whl/cu128   (đổi cuXXX theo driver, xem nvidia-smi)
+# File chung, KHÔNG có torch. Đừng cài trực tiếp file này; cài một trong hai file theo máy (đã gồm file này):
+#   requirements-gpu.txt  máy GPU (driver CUDA 13.1, Python 3.14): torch 2.14.1+cu130
+#   requirements-cpu.txt  máy local không GPU (Python 3.15, test):  torch 2.15.0+cpu
 # Không cần torchvision (ffd không import); nếu cài thì phải cùng lệnh với torch, lệch phiên bản -> lỗi torchvision::nms.
 
 -e .

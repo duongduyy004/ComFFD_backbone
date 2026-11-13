@@ -1,0 +1,7 @@
+# Máy GPU: driver hỗ trợ CUDA 13.1 (nvidia-smi), Python 3.14 (win_amd64). Cài: python -m pip install -r requirements-gpu.txt
+# cu130 vì bản build CUDA của torch không được vượt CUDA Version của driver (cu132 cần driver >= 13.2).
+# Đổi driver/Python thì chọn lại cuXXX và phiên bản có wheel tại https://download.pytorch.org/whl/<cuXXX>/torch/
+# Đã kiểm 13/11/2026: toàn bộ gói giải được cho cp314 win_amd64 (pip --dry-run), chưa cài thật trên máy GPU.
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.14.1+cu130
+-r requirements.txt

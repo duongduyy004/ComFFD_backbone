@@ -11,17 +11,34 @@ Trạng thái: chưa chạy thử trên GPU/dữ liệu thật.
 Venv riêng cho detector (PowerShell, chạy trong thư mục `detector/`):
 
 ```powershell
-py -m venv .venv
+py -3.14 -m venv .venv                            # máy GPU: Python 3.14; máy local: py -3.15
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu128   # cuXXX theo nvidia-smi
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-gpu.txt     # máy GPU; máy local không GPU: requirements-cpu.txt
 python -c "import torch, transformers, cv2; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-- `requirements.txt` ghim phiên bản đã chạy pytest. Detector **độc lập với preprocessing** (từ 13/11/2026): không import `compsynth_ff`, không cần cài `../preprocessing`; chỉ đọc dữ liệu trên đĩa theo mục "Hợp đồng dữ liệu" dưới đây.
-- torch cài riêng vì PyPI trên Windows chỉ có bản CPU. Không cài torchvision (ffd không dùng; lệch phiên bản với torch -> lỗi `torchvision::nms`).
-- Dòng cuối phải in `True`. Mỗi terminal mới: activate lại rồi chạy `python -m ffd.cli ...` (không dùng `py`, `py` có thể gọi Python chung của máy).
+- Torch đã nằm trong file requirements theo máy, không cài riêng nữa:
+  - `requirements-gpu.txt`: `torch==2.14.1+cu130`, cho máy GPU có driver CUDA 13.1 (`nvidia-smi`) và Python 3.14. Bản build CUDA của torch không được vượt `CUDA Version` của driver (`cu132` cần driver >= 13.2).
+  - `requirements-cpu.txt`: `torch==2.15.0+cpu`, cho máy local (Python 3.15, chỉ chạy test). Không dùng 2.14.1 ở đây vì 2.14.1+cpu trên Python 3.15 làm DataLoader worker chết.
+  - Đổi driver hoặc Python thì chọn lại `cuXXX` và phiên bản có wheel tại `https://download.pytorch.org/whl/<cuXXX>/torch/`.
+- `requirements.txt` là phần chung (không có torch), được hai file trên gọi qua `-r`; không cài trực tiếp. Detector **độc lập với preprocessing** (từ 13/11/2026): không import `compsynth_ff`, không cần cài `../preprocessing`; chỉ đọc dữ liệu trên đĩa theo mục "Hợp đồng dữ liệu" dưới đây.
+- Không cài torchvision (ffd không dùng; lệch phiên bản với torch -> lỗi `torchvision::nms`).
+- Trên máy GPU, dòng cuối phải in `2.14.1+cu130 True`. Mỗi terminal mới: activate lại rồi chạy `python -m ffd.cli ...` (không dùng `py`, `py` có thể gọi Python chung của máy).
+- Venv cài theo hướng dẫn cũ (torch cài tay, `-e ../preprocessing`): chạy lại `python -m pip install -r requirements-gpu.txt`; `compsynth-ff` còn sót trong venv không ảnh hưởng (gỡ bằng `pip uninstall compsynth-ff` nếu muốn).
+
+### Config
+
+Chép `config.example.yaml` thành `config.yaml` rồi sửa `ffpp_root` = `out_root` của preprocessing (thư mục chứa `ffpp_raw/`, `ffpp_aug/`). Config cũ còn khóa `ffpp_config` sẽ bị từ chối (khóa không hợp lệ): đổi thành `ffpp_root`.
+
+### Chạy test
+
+```powershell
+python -m pytest -q                                   # CPU, dữ liệu tổng hợp MINH HỌA, ~4 phút; kỳ vọng 132 passed, 2 skipped
+$env:FFD_REAL_CONFIG = "config.yaml"; python -m pytest -q --run-gpu tests/test_smoke_gpu.py   # máy GPU, dữ liệu thật
+```
+
+Test không cần preprocessing: fixture `tests/synth_ffpp.py` tự sinh `ffpp_root` tổng hợp đúng hợp đồng dữ liệu dưới đây.
 
 ## Hợp đồng dữ liệu (preprocessing -> detector)
 
@@ -82,9 +99,11 @@ Cần có sẵn `<ffpp_root>/ffpp_raw` và `<ffpp_root>/ffpp_aug` (`ffpp_root` t
 ## Hạn chế đã biết
 
 - Mới test trên CPU với dữ liệu tổng hợp (MINH HỌA) và CLIP tí hon ngẫu nhiên; chưa chạy ViT-L thật, chưa có FF++ trên máy.
+- Test local chạy torch 2.15.0+cpu / Python 3.15; máy GPU dùng torch 2.14.1+cu130 / Python 3.14 (tổ hợp chưa test, mới kiểm `pip --dry-run`). Chạy `smoke` trước khi train thật.
+- Detector không tự phát hiện việc sửa config preprocessing mà chưa chạy lại stage: nó chỉ kiểm mỗi manifest có một `config_hash` và hash lúc eval trùng lúc train. Giữ đồng bộ dữ liệu với config là việc của preprocessing.
 - Chưa có đánh giá cross-dataset: lệnh `prep-cross` (Celeb-DF v2) đã bỏ ngày 12/11/2026.
 - Mục fake không bốc được mask (`fallback=True`) dùng fake gốc của method đã bốc; theo dõi bằng QC Q9 ở preprocessing.
 - Bốc method đều theo xác suất trên các method dùng được của từng frame.
 - Arm `raw+rep` chỉ dùng ảnh tăng cường khi frame có **cả** `rep` lẫn `seam`; thiếu một trong hai thì cả hai lớp dùng ảnh gốc (`fallback=True`). Vì vậy ρ hiệu dụng ≈ ρ × (tỉ lệ frame có đủ cặp) < 0.5; train chưa ghi tỉ lệ này.
 - Mục `rep` mang method đã bốc lúc `build-aug` (`meta["method"]`, đã loại cặp `(tid, method)` lệch hàng), không phải method bốc lúc train.
-- Ảnh train luôn qua đúng một lần JPEG q ~ U(75, 95); val/test (`eval_transform`) không nén thêm. Lệch này giống nhau cho cả hai arm.
+- Ảnh gốc `ffpp_raw` lúc train luôn qua đúng một lần JPEG q ~ U(`jpeg_q`), mặc định (75, 95); val/test (`eval_transform`) không nén thêm. Lệch này giống nhau cho cả hai arm.
