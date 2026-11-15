@@ -18,7 +18,7 @@ def assert_subset(subset: str, allowed: set, what: str) -> None:
         raise LeakageError(f"{what}: subset '{subset}' không được phép (chỉ {sorted(allowed)})")
 
 _TRAIN_ALLOWED = {"ffpp_train", "ffpp_val", "ffpp_aug"}
-_EVAL_ALLOWED = {"ffpp_test"}  # chỉ tập test, không train/val
+_EVAL_ALLOWED = {"ffpp_val", "ffpp_test", "celebdf"}  # eval của best.pt: val (cho result.json), test, Celeb-DF
 
 
 def allow_read(stage: Literal["train", "eval"], what: str) -> None:

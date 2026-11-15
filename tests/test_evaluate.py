@@ -1,234 +1,87 @@
-"""Test evaluate_run. Trạng thái: chưa chạy thử. Dữ liệu: FF++ tổng hợp (MINH HỌA), CLIP tí hon ngẫu nhiên."""
+"""Test evaluate_run -> result.json. Dữ liệu tổng hợp (MINH HỌA), CLIP tí hon ngẫu nhiên, CPU.
+Trạng thái: chưa chạy thử trên GPU."""
 import json
 import shutil
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("transformers")
 
-
-from ffd.config import TrainConfig, file_hash  # noqa: E402
+from ffd.config import TrainConfig  # noqa: E402
 from ffd.evaluate import evaluate_run  # noqa: E402
 from ffd.guards import LeakageError, allow_read  # noqa: E402
 from ffd.train import train  # noqa: E402
 
-COLS = ["run", "mode", "seed", "split", "dataset", "video_id", "frame_idx", "label", "logit", "cell", "flag",
-        "best_step"]
-
 
 @pytest.fixture(scope="module")
-def vc():
+def tiny_mod():
+    pytest.importorskip("transformers")
     from transformers import CLIPVisionConfig
 
-    return CLIPVisionConfig(hidden_size=32, intermediate_size=37, num_hidden_layers=24,
-                            num_attention_heads=4, image_size=336, patch_size=14)
+    vc = CLIPVisionConfig(hidden_size=32, intermediate_size=37, num_hidden_layers=24,
+                          num_attention_heads=4, image_size=224, patch_size=14)
+    return dict(model_name="local-tiny", lora_r=4, lora_alpha=8, lora_dropout=0.0,
+                lora_targets=("q_proj", "v_proj"), grad_checkpointing=False, vision_config=vc)
 
 
 @pytest.fixture(scope="module")
-def trained_tiny_run(ffpp_synth, vc, tmp_path_factory):
-    cfg = TrainConfig(ffpp_root=ffpp_synth, runs_root=tmp_path_factory.mktemp("runs"), mode="raw",
-                      seed=0, total_steps=2, eval_every=2, ckpt_every=2, batch_size=4, num_workers=0,
-                      grad_checkpointing=False, lora_r=4, lora_alpha=8)
-    return train(cfg, vision_config=vc, allow_cpu=True)
+def trained(tiny_mod, data_root, tmp_path_factory):
+    """Một run tí hon train trên CPU (2 epoch); trả (thư mục run, vision_config)."""
+    kw = {k: v for k, v in tiny_mod.items() if k != "vision_config"}
+    cfg = TrainConfig(data_root=data_root, ckpt_root=tmp_path_factory.mktemp("ck"), arm="raw", seed=0,
+                      batch_size=32, max_epochs=2, patience=5, num_workers=0, **kw)
+    return train(cfg, vision_config=tiny_mod["vision_config"], allow_cpu=True), tiny_mod["vision_config"]
 
 
-def ev(run, ds, vc, ffpp):
-    out = evaluate_run(run, ds, ffpp_root=ffpp, vision_config=vc, device="cpu")
-    assert out == run
-    return pd.concat([pd.read_parquet(run / f"scores_{d}.parquet") for d in ds], ignore_index=True)
+def _ev(trained, **kw):
+    run, vc = trained
+    kw.setdefault("device", "cpu")
+    return evaluate_run(run, vision_config=vc, **kw)
 
 
-def test_eval_refuses_unfinished_run(tmp_path):
-    (tmp_path / "best.pt").write_bytes(b"")
-    with pytest.raises(ValueError):
-        evaluate_run(tmp_path, ["ffpp_test"])
+def test_result_json_schema(trained, data_root):
+    p = _ev(trained, data_root=data_root)
+    r = json.loads(p.read_text(encoding="utf-8"))
+    assert set(r) >= {"arm", "config", "best_epoch", "epochs_run", "stopped_early", "total_steps",
+                      "val", "ffpp_test", "celebdf"}
+    assert set(r["ffpp_test"]["auc_per_method"]) == {"DF", "F2F", "FS", "NT", "FSh"}
+    assert r["ffpp_test"]["n_videos_dropped"] == 1
+    assert r["arm"] == "raw" and r["epochs_run"] == 2 and r["config"]["lora"]["r"] == 4
+    assert r["config"]["manifest_sha256"]["raw"] and r["config"]["params_json_sha256"]
+    for ds in ("val", "ffpp_test", "celebdf"):
+        s = pd.read_parquet(trained[0] / f"scores_{ds}.parquet")
+        assert list(s.columns) == ["video_id", "frame_idx", "label", "method", "logit"]
+        assert len(s) == r[ds]["n_frames"]
 
 
-def test_eval_rejects_unknown_dataset(trained_tiny_run):
-    for bad in ("cdf2", "ffpp_val", "ffpp_train"):
-        with pytest.raises(ValueError):
-            evaluate_run(trained_tiny_run, [bad])
+def test_eval_without_celebdf(trained, data_root, tmp_path):
+    root = tmp_path / "dr"
+    shutil.copytree(data_root, root, ignore=shutil.ignore_patterns("celebdf"))
+    r = json.loads(_ev(trained, data_root=root).read_text(encoding="utf-8"))
+    assert list(r["celebdf"]) == ["skipped"] and "celebdf/manifest.parquet" in r["celebdf"]["skipped"]
+    assert "auc" in r["ffpp_test"]
 
 
-def test_eval_refuses_prereg_mismatch(trained_tiny_run, tmp_path):
-    run = tmp_path / "r"
-    shutil.copytree(trained_tiny_run, run)
-    pre = tmp_path / "prereg.yaml"
-    pre.write_text("rho: 0.5\n", encoding="utf-8")
-    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
-    info["prereg_hash"] = file_hash(pre)
-    info["config"]["prereg"] = str(pre)
-    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
-    pre.write_text("rho: 0.6\n", encoding="utf-8")  # prereg đổi sau khi train
-    with pytest.raises(ValueError, match="prereg"):
-        evaluate_run(run, ["ffpp_test"])
+def test_eval_val_only(trained, data_root):
+    r = json.loads(_ev(trained, data_root=data_root, datasets=("val",)).read_text(encoding="utf-8"))
+    assert "val" in r and "ffpp_test" not in r and "celebdf" not in r
 
 
-def test_eval_guard_blocks_train_val_sources():
-    for w in ("ffpp_train", "ffpp_val", "compsynth_val", "cdf2", "whatever"):
+def test_eval_rejects_changed_data(trained, data_root, tmp_path):
+    root = tmp_path / "dr"
+    shutil.copytree(data_root, root)
+    m = root / "ffpp" / "manifest_raw.parquet"
+    pd.read_parquet(m).iloc[:-1].to_parquet(m)  # sửa manifest sau khi train
+    with pytest.raises(ValueError, match="manifest_raw"):
+        _ev(trained, data_root=root)
+
+
+def test_eval_guard():
+    for w in ("ffpp_val", "ffpp_test", "celebdf"):
+        allow_read("eval", w)
+    for w in ("ffpp_train", "ffpp_aug", "whatever"):
         with pytest.raises(LeakageError):
             allow_read("eval", w)
-    allow_read("eval", "ffpp_test")
-
-
-def test_run_info_saves_config(trained_tiny_run):
-    info = json.loads((trained_tiny_run / "run_info.json").read_text(encoding="utf-8"))
-    assert info["config"]["mode"] == "raw" and info["config"]["lora_r"] == 4
-
-
-def test_eval_ffpp_test_all_frames(trained_tiny_run, ffpp_synth, vc):
-    from ffd.data.ffpp import FFppRaw
-
-    df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-    core = FFppRaw(ffpp_synth, "test")
-    assert list(df.columns) == COLS and len(df) == len(core)  # không bỏ frame nào
-    assert set(df.dataset) == {"ffpp_test"} and (df.flag == "").all() and set(df.label) == {0, 1}
-    assert df.logit.notna().all() and set(df["mode"]) == {"raw"} and set(df.seed) == {0}
-    assert set(df.video_id) == {core[i]["targets"]["video_id"] for i in range(len(core))}
-    assert (trained_tiny_run / "scores_ffpp_test.parquet").exists() and not list(trained_tiny_run.glob("*.tmp*"))
-
-
-def test_ffpp_test_video_without_kept_frames_flagged(trained_tiny_run, ffpp_synth, vc, monkeypatch):
-    import ffd.data.ffpp as D
-
-    full = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-    victim = sorted(full.video_id.unique())[0]
-    Orig = D.FFppRaw
-
-    class Dropping(Orig):  # mô phỏng video không còn frame keep
-        def __init__(self, root, subset):
-            super().__init__(root, subset)
-            self.items = [it for it in self.items if f"{it[0]}_{it[2]}" != victim]
-
-    monkeypatch.setattr(D, "FFppRaw", Dropping)
-    df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-    row = df[df.flag == "no_usable_frame"]
-    assert len(row) == 1 and row.video_id.iloc[0] == victim and row.frame_idx.iloc[0] == -1
-    assert row.logit.iloc[0] == 0.0 and row.label.iloc[0] == int(not victim.endswith("_real"))
-    assert set(df.video_id) == set(full.video_id) and len(df) == len(full) - (full.video_id == victim).sum() + 1
-
-
-def test_ffpp_test_unexpected_video_rejected(trained_tiny_run, ffpp_synth, vc, monkeypatch):
-    import ffd.data.ffpp as D
-
-    orig = D.expected_videos
-    # tập kỳ vọng thiếu một video mà FFppRawCore vẫn chấm
-    monkeypatch.setattr(D, "expected_videos", lambda c, sub: dict(list(orig(c, sub).items())[1:]))
-    with pytest.raises(ValueError, match="không thuộc tập test"):
-        ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-
-def test_eval_refuses_rebuilt_config_hash_mismatch(trained_tiny_run, tmp_path):
-    run = tmp_path / "r"
-    shutil.copytree(trained_tiny_run, run)
-    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
-    info["config"]["lora_r"] = 8
-    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
-    with pytest.raises(ValueError, match="config_hash"):
-        evaluate_run(run, ["ffpp_test"])
-
-
-def test_ffpp_expected_set_from_manifest(trained_tiny_run, ffpp_synth, vc):
-    import json as _j
-
-    df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-    assert (df.flag == "").all() and len(df) > 0
-    info = _j.loads((trained_tiny_run / "eval_info.json").read_text(encoding="utf-8"))
-    assert info["ffpp_test"]["expected_source"] == "ffpp_raw_manifest"
-
-
-def test_run_info_records_model_and_ffpp_provenance(trained_tiny_run):
-    """I2/I3: run_info ghi model_revision (None khi chưa ghim), model_commit ("local" với vision_config) và
-    config_hash của hai manifest tiền xử lý (ffpp_raw_hash, ffpp_aug_hash)."""
-    from synth_ffpp import AUG_HASH, RAW_HASH
-
-    info = json.loads((trained_tiny_run / "run_info.json").read_text(encoding="utf-8"))
-    assert info["model_revision"] is None and info["model_commit"] == "local"
-    assert info["ffpp_raw_hash"] == RAW_HASH and info["ffpp_aug_hash"] == AUG_HASH
-
-
-def _copy_root(src, dst):
-    shutil.copytree(src, dst)
-    return dst
-
-
-def test_eval_refuses_changed_ffpp_artifacts(trained_tiny_run, ffpp_synth, vc, tmp_path):
-    """I3: manifest lúc eval có config_hash khác lúc train (raw hoặc aug) -> ValueError."""
-    run = tmp_path / "r"
-    shutil.copytree(trained_tiny_run, run)
-    for name, key in (("ffpp_raw", "ffpp_raw_hash"), ("ffpp_aug", "ffpp_aug_hash")):
-        root = _copy_root(ffpp_synth, tmp_path / f"o_{name}")
-        mp = root / name / "manifest.parquet"
-        man = pd.read_parquet(mp)
-        man["config_hash"] = "khacMINHHOA"
-        man.to_parquet(mp, index=False)
-        with pytest.raises(ValueError, match=key):
-            evaluate_run(run, ["ffpp_test"], ffpp_root=root, vision_config=vc, device="cpu")
-    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
-    info["ffpp_raw_hash"] = "deadbeef0000"
-    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
-    with pytest.raises(ValueError, match="ffpp_raw_hash"):
-        evaluate_run(run, ["ffpp_test"], ffpp_root=ffpp_synth, vision_config=vc, device="cpu")
-
-
-def test_eval_refuses_model_commit_mismatch(trained_tiny_run, ffpp_synth, vc, tmp_path):
-    run = tmp_path / "r"
-    shutil.copytree(trained_tiny_run, run)
-    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
-    info["model_commit"] = "abc123"
-    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
-    with pytest.raises(ValueError, match="commit"):
-        evaluate_run(run, ["ffpp_test"], ffpp_root=ffpp_synth, vision_config=vc, device="cpu")
-
-
-def test_scores_carry_best_step(trained_tiny_run, ffpp_synth, vc):
-    """I6: mỗi dòng scores mang step của best.pt đã chấm."""
-    df = ev(trained_tiny_run, ["ffpp_test"], vc, ffpp_synth)
-    step = int(torch.load(trained_tiny_run / "best.pt", weights_only=False)["step"])
-    assert set(df.best_step) == {step} and df.best_step.dtype == "int64"
-
-
-def test_eval_accepts_moved_paths(trained_tiny_run, ffpp_synth, vc, tmp_path):
-    """R1: eval trên "máy khác": ffpp_root và prereg ở chỗ mới, đường dẫn lúc train không còn
-    -> vẫn chấm được (hash chỉ phụ thuộc nội dung manifest và prereg)."""
-    run = tmp_path / "r"
-    shutil.copytree(trained_tiny_run, run)
-    pre_old, pre_new = tmp_path / "old" / "prereg.yaml", tmp_path / "new" / "prereg.yaml"
-    pre_new.parent.mkdir()
-    pre_new.write_text("rho: 0.5\n", encoding="utf-8")
-    info = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
-    info["prereg_hash"] = file_hash(pre_new)
-    info["config"]["prereg"] = str(pre_old)  # đường dẫn của máy train, không tồn tại ở đây
-    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
-    moved = _copy_root(ffpp_synth, tmp_path / "may_khac")
-    info["config"]["ffpp_root"] = str(tmp_path / "khong_co")  # ffpp_root của máy train
-    (run / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
-    with pytest.raises(ValueError, match="--ffpp-root"):
-        evaluate_run(run, ["ffpp_test"], prereg=pre_new, vision_config=vc, device="cpu")
-    with pytest.raises(ValueError, match="--prereg"):
-        evaluate_run(run, ["ffpp_test"], ffpp_root=moved, vision_config=vc, device="cpu")
-    evaluate_run(run, ["ffpp_test"], ffpp_root=moved, prereg=pre_new, vision_config=vc, device="cpu")
-    assert (run / "scores_ffpp_test.parquet").exists()
-    pre_new.write_text("rho: 0.6\n", encoding="utf-8")  # nội dung đổi -> vẫn từ chối
-    with pytest.raises(ValueError, match="prereg"):
-        evaluate_run(run, ["ffpp_test"], ffpp_root=moved, prereg=pre_new, vision_config=vc, device="cpu")
-
-
-def test_eval_rejects_compsynth(trained_tiny_run, ffpp_synth, vc):
-    with pytest.raises(Exception):
-        ev(trained_tiny_run, ["compsynth_test"], vc, ffpp_synth)
-
-
-def test_ffpp_test_expected_from_manifest(trained_tiny_run, ffpp_synth, vc, tmp_path):
-    """Video test có mọi frame fake keep=False trong ffpp_raw/manifest vẫn có dòng điểm 0 no_usable_frame."""
-    out = _copy_root(ffpp_synth, tmp_path / "o")
-    mp = out / "ffpp_raw" / "manifest.parquet"
-    man = pd.read_parquet(mp)
-    vid = sorted(man[(man.split == "test") & (man.method == "DF") & man.keep].video_id)[0]
-    man.loc[man.video_id == vid, ["keep", "drop_reason"]] = [False, "no_face"]
-    man.to_parquet(mp, index=False)
-    df = ev(trained_tiny_run, ["ffpp_test"], vc, out)
-    row = df[df.video_id == vid]
-    assert len(row) == 1 and row.flag.iloc[0] == "no_usable_frame" and row.logit.iloc[0] == 0.0
+    with pytest.raises(LeakageError):
+        allow_read("train", "ffpp_test")
