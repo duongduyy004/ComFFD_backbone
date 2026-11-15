@@ -1,4 +1,4 @@
-"""Test run dir. Trạng thái: chưa chạy thử."""
+"""Test thư mục run checkpoints/clip/<run>. Trạng thái: chưa chạy thử trên GPU."""
 import json
 from pathlib import Path
 
@@ -7,121 +7,70 @@ import pytest
 from ffd.config import TrainConfig, config_hash
 from ffd.rundir import prepare_run_dir, run_dir, write_run_info
 
+RESULTS = ["best.pt", "last.pt", "train_log.csv", "result.json", "scores_ffpp_test.parquet",
+           "scores_celebdf.parquet", "run_info.json", "done.flag"]
 
-def cfg(**kw):
-    d = dict(ffpp_root=Path("x"), runs_root=Path("runs"), mode="raw", seed=0,
-             total_steps=10, eval_every=5, ckpt_every=5)
+
+def cfg(tmp_path, **kw):
+    d = dict(data_root=Path("x"), ckpt_root=tmp_path / "ck", arm="raw", seed=0)
     d.update(kw)
     return TrainConfig(**d)
 
 
 def test_run_dir_layout(tmp_path):
-    assert run_dir(cfg(mode="raw+rep", seed=2, runs_root=tmp_path)) == tmp_path / "aug/raw+rep/seed2"
+    assert run_dir(cfg(tmp_path)) == tmp_path / "ck" / "raw"
+    assert run_dir(cfg(tmp_path, arm="raw_aug")) == tmp_path / "ck" / "raw_aug"
+    assert run_dir(cfg(tmp_path, run_name="lr1e-4")) == tmp_path / "ck" / "lr1e-4"
 
 
 def test_refuse_finished_run(tmp_path):
-    d = prepare_run_dir(c := cfg(runs_root=tmp_path), resume=False, force=False)
-    (d / "best.pt").write_bytes(b"x"); (d / "done.flag").touch()
-    with pytest.raises(FileExistsError):
-        prepare_run_dir(c, resume=False, force=False)
-    assert prepare_run_dir(c, resume=False, force=True) == d
-
-
-def test_resume_hash_mismatch(tmp_path):
-    c = cfg(runs_root=tmp_path)
+    c = cfg(tmp_path)
     d = prepare_run_dir(c, resume=False, force=False)
-    write_run_info(d, c, {})
-    assert prepare_run_dir(c, resume=True, force=False) == d
-    with pytest.raises(ValueError):
-        prepare_run_dir(cfg(runs_root=tmp_path, rho=0.7), resume=True, force=False)
-
-
-def test_write_run_info(tmp_path):
-    sp = tmp_path / "split.json"; sp.write_text("{}")
-    c = cfg(runs_root=tmp_path)
-    write_run_info(tmp_path / "r", c, {"split_file": sp, "note": "x"})
-    j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
-    assert j["config_hash"] == config_hash(c) and j["seed"] == 0 and j["mode"] == "raw"
-    assert j["split_hash"] and j["prereg_hash"] is None and "torch" in j["versions"] and j["note"] == "x"
-
-
-def test_run_info_atomic_roundtrip(tmp_path):
-    d = tmp_path / "r"
-    write_run_info(d, cfg(runs_root=tmp_path), {})
-    assert json.loads((d / "run_info.json").read_text(encoding="utf-8"))["mode"] == "raw"
-    assert [p.name for p in d.iterdir()] == ["run_info.json"]
-
-
-def test_force_removes_stale_artifacts_but_resume_keeps(tmp_path):
-    c = cfg(runs_root=tmp_path)
-    d = prepare_run_dir(c, resume=False, force=False)
-    stale = ["done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json"]
-    for n in stale:
-        (d / n).write_text("x")
-    write_run_info(d, c, {})
-    (d / "done.flag").unlink()
-    assert prepare_run_dir(c, resume=True, force=False) == d
-    assert all((d / n).exists() for n in stale if n != "done.flag")
-    (d / "done.flag").write_text("x")
-    prepare_run_dir(c, resume=False, force=True)
-    assert not any((d / n).exists() for n in stale)
-    assert (d / "run_info.json").exists()
-
-
-def test_stale_artifacts_without_resume_or_force_refused(tmp_path):
-    c = cfg(runs_root=tmp_path)
-    for n in ("last.pt", "best.pt", "val_curve.jsonl", "train_log.jsonl", "error.json"):
-        d = prepare_run_dir(c, resume=False, force=False)
-        (d / n).write_text("x")
+    (d / "result.json").write_text("{}")
+    for resume in (False, True):
         with pytest.raises(FileExistsError):
-            prepare_run_dir(c, resume=False, force=False)
-        assert prepare_run_dir(c, resume=True, force=False) == d
-        prepare_run_dir(c, resume=False, force=True)
-        assert not (d / n).exists()
+            prepare_run_dir(c, resume=resume, force=False)
+    assert prepare_run_dir(c, resume=False, force=True) == d
+    assert not (d / "result.json").exists()
 
 
-def test_run_info_ffpp_hashes(tmp_path, ffpp_synth):
-    """run_info ghi config_hash của ffpp_raw/ và ffpp_aug/manifest (preprocessing ghi, detector không tính lại);
-    manifest không có -> None."""
-    from synth_ffpp import AUG_HASH, RAW_HASH
-
-    write_run_info(tmp_path / "r", cfg(runs_root=tmp_path, ffpp_root=ffpp_synth), {"model_commit": "abc"})
-    j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
-    assert j["ffpp_raw_hash"] == RAW_HASH and j["ffpp_aug_hash"] == AUG_HASH
-    assert j["model_commit"] == "abc" and j["model_revision"] is None
-    write_run_info(tmp_path / "r2", cfg(runs_root=tmp_path, ffpp_root=tmp_path / "none"), {})
-    j2 = json.loads((tmp_path / "r2/run_info.json").read_text(encoding="utf-8"))
-    assert j2["ffpp_raw_hash"] is None and j2["ffpp_aug_hash"] is None
-
-
-def test_manifest_with_mixed_hash_rejected(tmp_path, ffpp_synth):
-    import shutil
-
-    import pandas as pd
-
-    from ffd.data.ffpp import StaleArtifactError, manifest_hashes
-
-    root = tmp_path / "o"
-    shutil.copytree(ffpp_synth / "ffpp_raw", root / "ffpp_raw", ignore=shutil.ignore_patterns("*.png"))
-    mp = root / "ffpp_raw" / "manifest.parquet"
-    man = pd.read_parquet(mp)
-    man.loc[0, "config_hash"] = "khac"
-    man.to_parquet(mp, index=False)
-    with pytest.raises(StaleArtifactError, match="config_hash"):
-        manifest_hashes(root)
-    man.drop(columns="keep").to_parquet(mp, index=False)
-    with pytest.raises(StaleArtifactError, match="keep"):
-        manifest_hashes(root)
-
-
-def test_force_removes_scores_and_eval_info(tmp_path):
-    """I6: scores_*.parquet và eval_info.json là kết quả cũ: không force thì từ chối, force thì xóa."""
-    c = cfg(runs_root=tmp_path)
+@pytest.mark.parametrize("name", [n for n in RESULTS if n != "result.json"])
+def test_leftovers_need_resume_or_force(tmp_path, name):
+    c = cfg(tmp_path)
     d = prepare_run_dir(c, resume=False, force=False)
-    names = ["scores_ffpp_test.parquet", "scores_cdf2.parquet", "eval_info.json"]
-    for n in names:
-        (d / n).write_text("x")
+    (d / name).write_text("x")
     with pytest.raises(FileExistsError):
         prepare_run_dir(c, resume=False, force=False)
     prepare_run_dir(c, resume=False, force=True)
-    assert not any((d / n).exists() for n in names)
+    assert not (d / name).exists()
+
+
+def test_force_removes_all_results(tmp_path):
+    c = cfg(tmp_path)
+    d = prepare_run_dir(c, resume=False, force=False)
+    for n in RESULTS + ["error.json", "keep.txt"]:
+        (d / n).write_text("x")
+    prepare_run_dir(c, resume=False, force=True)
+    assert sorted(p.name for p in d.iterdir()) == ["keep.txt"]
+
+
+def test_resume_keeps_files_and_checks_hash(tmp_path):
+    c = cfg(tmp_path)
+    d = prepare_run_dir(c, resume=False, force=False)
+    write_run_info(d, c, {})
+    (d / "last.pt").write_text("x")
+    assert prepare_run_dir(c, resume=True, force=False) == d
+    assert (d / "last.pt").exists()
+    with pytest.raises(ValueError, match="config_hash"):
+        prepare_run_dir(cfg(tmp_path, lr=1e-4), resume=True, force=False)
+
+
+def test_write_run_info(tmp_path, data_root):
+    c = cfg(tmp_path, data_root=data_root)
+    write_run_info(tmp_path / "r", c, {"model_commit": "abc", "note": "x"})
+    j = json.loads((tmp_path / "r/run_info.json").read_text(encoding="utf-8"))
+    assert j["config_hash"] == config_hash(c) and j["model_commit"] == "abc" and j["note"] == "x"
+    assert j["config"]["data_root"] == str(data_root) and j["config"]["arm"] == "raw"
+    assert j["config"]["jpeg_q"] == 95 and "torch" in j["versions"] and "gpu" in j
+    assert j["data_hashes"]["params_json_sha256"] and j["data_hashes"]["manifest_sha256"]["raw"]
+    assert [p.name for p in (tmp_path / "r").iterdir()] == ["run_info.json"]

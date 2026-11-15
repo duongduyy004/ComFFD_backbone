@@ -1,6 +1,12 @@
-"""Thư mục run: bố cục, chống ghi đè run đã xong, run_info.json.
+"""Thư mục run `<ckpt_root>/<run_name>` (mặc định checkpoints/clip/raw, checkpoints/clip/raw_aug): chống ghi đè
+run đã xong, dọn kết quả cũ khi --force, run_info.json.
 
-Trạng thái: chưa chạy thử.
+Quy tắc:
+- Có `result.json` (đã eval xong) mà không `force` -> FileExistsError (kể cả khi resume).
+- Không `resume`, không `force` mà còn file kết quả (STALE hoặc scores_*.parquet) -> FileExistsError.
+- `force` xóa toàn bộ file kết quả (và error.json) rồi chạy lại từ đầu.
+- `resume`: config_hash trong run_info.json phải khớp config hiện tại.
+Trạng thái: chưa chạy thử trên GPU.
 """
 from __future__ import annotations
 
@@ -8,25 +14,30 @@ import dataclasses
 import json
 from pathlib import Path
 
-from .config import TrainConfig, config_hash, file_hash
+from .config import TrainConfig, config_hash, run_name_of
 from .io_utils import write_json_atomic
+
+# File kết quả của một run (cùng scores_*.parquet). error.json chỉ bị xóa khi force, không chặn chạy lại.
+STALE = ("best.pt", "last.pt", "train_log.csv", "result.json", "run_info.json", "done.flag")
 
 
 def run_dir(cfg: TrainConfig) -> Path:
-    return Path(cfg.runs_root) / "aug" / cfg.mode / f"seed{cfg.seed}"
+    return Path(cfg.ckpt_root) / run_name_of(cfg)
 
 
-# Kết quả của một lần chạy (cả điểm eval: scores_*.parquet, eval_info.json): --force xóa hết, không resume/force thì từ chối.
-STALE = ("done.flag", "best.pt", "last.pt", "val_curve.jsonl", "train_log.jsonl", "error.json",
-         "scores_ffpp_test.parquet", "scores_cdf2.parquet", "eval_info.json")
+def _results(d: Path) -> list[Path]:
+    return [d / n for n in STALE if (d / n).exists()] + sorted(d.glob("scores_*.parquet"))
 
 
 def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:
     d = run_dir(cfg)
-    if (d / "best.pt").exists() and (d / "done.flag").exists() and not force:
-        raise FileExistsError(f"Run đã xong: {d} (dùng force để chạy lại)")
-    if not resume and not force:
-        left = [n for n in STALE if (d / n).exists()]
+    if force:
+        for p in _results(d) + [d / "error.json"]:
+            p.unlink(missing_ok=True)
+    if (d / "result.json").exists():
+        raise FileExistsError(f"Run đã xong (có result.json): {d}; dùng force để chạy lại")
+    if not resume:
+        left = [p.name for p in _results(d)]
         if left:
             raise FileExistsError(f"Thư mục run còn kết quả cũ {left} trong {d}; dùng resume hoặc force")
     info = d / "run_info.json"
@@ -35,9 +46,6 @@ def prepare_run_dir(cfg: TrainConfig, *, resume: bool, force: bool) -> Path:
         if old != config_hash(cfg):
             raise ValueError(f"config_hash khác run cũ ({old} != {config_hash(cfg)}); không resume")
     d.mkdir(parents=True, exist_ok=True)
-    if force and not resume:  # chạy lại từ đầu: xóa kết quả cũ để không lẫn vào run mới
-        for n in STALE:
-            (d / n).unlink(missing_ok=True)
     return d
 
 
@@ -59,31 +67,20 @@ def _gpu():
         return None
 
 
-def ffpp_hashes(cfg: TrainConfig) -> dict:
-    """Định danh artifact tiền xử lý: config_hash ghi trong ffpp_raw/ và ffpp_aug/manifest.parquet dưới cfg.ffpp_root
-    (preprocessing tự ghi; detector không tính lại). Manifest không có -> None."""
-    from .data.ffpp import manifest_hashes
+def write_run_info(d, cfg: TrainConfig, extra: dict | None = None) -> None:
+    """Ghi run_info.json: config đầy đủ (evaluate dựng lại Detector từ đây), config_hash, model_commit (extra),
+    phiên bản thư viện, GPU, sha256 của params.json/manifest (`data_hashes`)."""
+    from .data.ffpp import data_hashes
 
-    return manifest_hashes(cfg.ffpp_root)
-
-
-def write_run_info(dir, cfg: TrainConfig, extra: dict) -> None:
-    """Ghi run_info.json. extra có thể chứa model_commit (commit HF đã resolve), split_file (đường dẫn để băm), ..."""
     extra = dict(extra or {})
-    split_file = extra.pop("split_file", None)
     info = {
+        "config": json.loads(json.dumps(dataclasses.asdict(cfg), default=str)),
         "config_hash": config_hash(cfg),
-        "prereg_hash": file_hash(cfg.prereg) if cfg.prereg else None,
-        "split_hash": file_hash(split_file) if split_file else None,
-        "versions": _versions(),
-        "model_name": cfg.model_name,
-        "model_revision": cfg.model_revision,
+        "run_name": run_name_of(cfg),
         "model_commit": extra.pop("model_commit", None),
-        **ffpp_hashes(cfg),
+        "versions": _versions(),
         "gpu": _gpu(),
-        "seed": cfg.seed,
-        "mode": cfg.mode,
-        "config": json.loads(json.dumps(dataclasses.asdict(cfg), default=str)),  # evaluate dựng lại Detector từ đây
+        "data_hashes": data_hashes(cfg.data_root),
         **extra,
     }
-    write_json_atomic(info, Path(dir) / "run_info.json")
+    write_json_atomic(info, Path(d) / "run_info.json")

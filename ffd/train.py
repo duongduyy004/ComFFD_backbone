@@ -1,29 +1,32 @@
-"""Vòng train: val định kỳ, chọn best.pt theo (AUC video, BCE), last.pt + resume, chặn NaN.
+"""Vòng train theo epoch, early stopping, best.pt / last.pt / train_log.csv trong checkpoints/clip/<run>.
 
 Quy ước:
-- 1 "step" = 1 lần cập nhật optimizer (gồm `grad_accum` micro-batch). Mỗi micro-batch đúng batch_size/2 real
-  + batch_size/2 fake (`_epoch_batches`, batch_size phải chẵn); thứ tự xáo bằng Generator(seed, epoch),
-  drop_last; vị trí trong epoch suy ra từ step nên resume không cần đọc lại dữ liệu đã qua. `dataset.set_epoch(e)` gọi ở tiến trình chính mỗi đầu epoch, DataLoader
-  `persistent_workers=False` nên worker tạo lại mỗi epoch và thấy epoch mới.
-- Thứ tự trong một step: cập nhật -> train_log -> val (nếu eval_every) -> last.pt (nếu ckpt_every).
-  Step cuối luôn val và lưu last.pt.
-- Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. `allow_cpu=True` chỉ dùng trong test
-  (CPU, không autocast). Dữ liệu đọc từ cfg.ffpp_root.
-- Val: FFppRaw(val) cho mọi arm. `allow_read("train", ...)` gọi ngay trước khi mở từng tập.
-- grad_accum: một step luôn gồm đúng `grad_accum` micro-batch, kể cả khi vượt biên epoch (bộ tích lũy nằm
-  ngoài vòng epoch) nên vị trí resume = step * grad_accum micro-batch là chính xác.
-- Resume: best.pt mồ côi (step > last.step) được ghi lại từ `best_state` trong last.pt (hoặc xóa nếu chưa có best).
-- AUC val không hữu hạn (một lớp, NaN) -> ValueError, không rơi xuống so sánh BCE.
-- Chọn best: AUC video cao hơn hẳn (> tol); hòa trong tol thì BCE thấp hơn.
-Trạng thái: chưa chạy thử (chỉ test CPU với CLIP tí hon ngẫu nhiên).
+- Epoch đánh số từ 1. Mỗi epoch đi qua mọi ảnh của TrainList đúng một lần theo
+  `torch.randperm(N, Generator().manual_seed(seed * 100_003 + epoch))`, cắt thành batch `batch_size`, batch cuối
+  nhỏ vẫn dùng (drop_last=False). Không class weight, không sampler cân bằng. `ds.set_epoch(epoch)` gọi ở tiến
+  trình chính trước khi dựng DataLoader (persistent_workers=False nên worker thấy epoch mới).
+- AdamW + warmup tuyến tính (`warmup_frac`) + cosine trên `max_epochs * ceil(N / batch_size)` bước; clip grad norm 1.0.
+- Cuối mỗi epoch: val FF++ (frame, eval_transform) -> auc_frame, bce -> cập nhật best -> một dòng train_log.csv
+  -> last.pt. Best theo (AUC frame, BCE): AUC hơn > 1e-4 thắng, hòa trong 1e-4 thì BCE thấp hơn.
+  `bad_epochs` tăng khi AUC frame không vượt best cũ quá 1e-4 (hòa mà BCE tốt hơn vẫn cập nhật best.pt nhưng
+  vẫn tính là epoch xấu); dừng khi `bad_epochs >= patience` hoặc hết `max_epochs`.
+- Resume chỉ ở biên epoch, từ last.pt; best.pt và train_log.csv được đưa về khớp last.pt (bỏ phần ghi sau nó).
+- Cột `seconds` = thời gian thực của epoch (train + val). `frac_real` = tỉ lệ ảnh nhãn 0 trong epoch;
+  `frac_rep`/`frac_seam` = tỉ lệ ảnh nguồn rep/seam; `frac_jpeg` = tỉ lệ ảnh đã nén JPEG.
+- Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. bf16 autocast trên CUDA.
+Trạng thái: chưa chạy thử trên GPU (chỉ test CPU với CLIP tí hon ngẫu nhiên).
 """
 from __future__ import annotations
 
 import contextlib
+import csv
 import functools
 import json
+import math
 import os
 import random
+import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -31,18 +34,23 @@ import pandas as pd
 import torch
 
 from . import progress
-from .config import TrainConfig
-from .data.arms import build_train_dataset
+from .config import TrainConfig, run_name_of
+from .data.ffpp import frames
+from .data.trainset import TrainList
 from .data.transforms import eval_transform
 from .guards import allow_read
-from .io_utils import write_json_atomic
+from .io_utils import read_image, write_json_atomic
 from .model import Detector
-from .rundir import prepare_run_dir, run_dir, write_run_info  # noqa: F401  (run_dir cho test/tiện ích)
-from .stats import auc, video_scores
+from .rundir import prepare_run_dir, write_run_info
+from .stats import auc
+
+LOG_COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce",
+            "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
+TOL = 1e-4
 
 
-def is_better(new, best, tol: float = 1e-4) -> bool:
-    """new/best = (AUC video, BCE). AUC hơn > tol thắng; |ΔAUC| <= tol thì BCE thấp hơn thắng."""
+def is_better(new, best, tol: float = TOL) -> bool:
+    """new/best = (AUC frame, BCE). AUC hơn > tol thắng; |ΔAUC| <= tol thì BCE thấp hơn thắng."""
     if best is None:
         return True
     if new[0] > best[0] + tol:
@@ -52,49 +60,31 @@ def is_better(new, best, tol: float = 1e-4) -> bool:
     return new[1] < best[1]
 
 
-# ---------------------------------------------------------------- val
-def _val_items(cfg: TrainConfig, subset: str = "val"):
-    """Trả (core, rows); rows = list (index trong core, video_id, frame_idx, label)."""
-    from .data import ffpp as D
-
-    allow_read("train", f"ffpp_{subset}")
-    core = D.FFppRaw(cfg.ffpp_root, subset)
-    rows = [(i, f"{t}_{s}", int(f), 0 if s == "real" else 1) for i, (t, f, s) in enumerate(core.items)]
-    return core, rows
+def epoch_batches(n: int, bs: int, seed: int, epoch: int) -> list[list[int]]:
+    """Hoán vị range(n) theo (seed, epoch), cắt thành batch bs; batch cuối nhỏ giữ nguyên."""
+    perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed * 100_003 + epoch)).tolist()
+    return [perm[i:i + bs] for i in range(0, n, bs)]
 
 
+# ---------------------------------------------------------------- DataLoader
 def loader_kwargs(num_workers: int, device, seed: int = 0) -> dict:
     """Tham số DataLoader dùng chung cho train/val/eval. Chỉ ảnh hưởng tốc độ, không đổi ảnh hay thứ tự:
-    pin_memory khi CUDA (chép sang GPU không chặn), prefetch 4 batch/worker, worker_init_fn seed + OpenCV 1 luồng."""
+    pin_memory khi CUDA, prefetch 4 batch/worker, worker_init_fn seed + OpenCV 1 luồng."""
     kw = {"num_workers": num_workers, "pin_memory": torch.device(device).type == "cuda", "persistent_workers": False}
     if num_workers:
         kw.update(prefetch_factor=4, worker_init_fn=functools.partial(_seed_worker, seed=seed))
     return kw
 
 
-class EvalImages(torch.utils.data.Dataset):
-    """Ảnh eval_transform của core[idx[j]] theo đúng thứ tự idx (cấp module để pickle được với spawn)."""
+def _seed_worker(worker_id: int, seed: int) -> None:
+    """worker_init_fn cấp module (pickle được khi Windows dùng spawn). OpenCV mỗi worker 1 luồng."""
+    import cv2
 
-    def __init__(self, core, idx):
-        self.core, self.idx = core, list(idx)
-
-    def __len__(self) -> int:
-        return len(self.idx)
-
-    def __getitem__(self, j: int) -> torch.Tensor:
-        return eval_transform(self.core[self.idx[j]]["image"])
-
-
-@torch.no_grad()
-def score_images(model, core, idx, bs: int, device, num_workers: int = 0, desc: str = "eval") -> torch.Tensor:
-    """Logit (float32, CPU) cho core[idx], cùng thứ tự idx; đọc ảnh song song qua DataLoader."""
-    loader = torch.utils.data.DataLoader(EvalImages(core, idx), batch_size=bs, shuffle=False,
-                                         **loader_kwargs(num_workers, device))
-    out = []
-    for x in progress.bar(loader, desc=desc, unit="batch", leave=False):
-        with _autocast(device):
-            out.append(model(x.to(device, non_blocking=True))["logit"].float().cpu())
-    return torch.cat(out) if out else torch.zeros(0)
+    cv2.setNumThreads(1)
+    s = (seed * 1_000_003 + worker_id) % (2**32)
+    np.random.seed(s)
+    random.seed(s)
+    torch.manual_seed(s)
 
 
 def _autocast(device):
@@ -103,63 +93,62 @@ def _autocast(device):
     return contextlib.nullcontext()
 
 
+class EvalImages(torch.utils.data.Dataset):
+    """eval_transform(read_image(path)) theo đúng thứ tự paths (cấp module để pickle được với spawn)."""
+
+    def __init__(self, paths):
+        self.paths = [str(p) for p in paths]
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, j: int) -> torch.Tensor:
+        return eval_transform(read_image(self.paths[j]))
+
+
 @torch.no_grad()
-def val_scores(model, cfg: TrainConfig, batch_size: int | None = None, device=None,
-               subset: str = "val") -> pd.DataFrame:
-    """[video_id, frame_idx, label, logit]; model trở về chế độ cũ (train/eval) sau khi tính."""
-    device = torch.device(device) if device is not None else next(model.parameters()).device
-    bs = batch_size or cfg.batch_size
-    core, rows = _val_items(cfg, subset)
+def score_frames(model, df: pd.DataFrame, bs: int, device, num_workers: int = 0, desc: str = "eval") -> np.ndarray:
+    """Logit float32 cho từng dòng df (cột path), cùng thứ tự df. Model ở eval trong lúc chấm, trả lại chế độ cũ."""
+    loader = torch.utils.data.DataLoader(EvalImages(df.path), batch_size=bs, shuffle=False,
+                                         **loader_kwargs(num_workers, device))
     was = model.training
     model.eval()
+    out = []
     try:
-        lg = score_images(model, core, [r[0] for r in rows], bs, device, cfg.num_workers, f"val {subset}").numpy()
+        for x in progress.bar(loader, desc=desc, unit="batch", leave=False):
+            with _autocast(device):
+                out.append(model(x.to(device, non_blocking=True))["logit"].float().cpu())
     finally:
         model.train(was)
-    return pd.DataFrame({"video_id": [r[1] for r in rows], "frame_idx": [r[2] for r in rows],
-                         "label": [r[3] for r in rows], "logit": lg})
+    return torch.cat(out).numpy() if out else np.zeros(0, np.float32)
 
 
-def _bce(df: pd.DataFrame) -> float:
-    z, y = df.logit.to_numpy(np.float64), df.label.to_numpy(np.float64)
+# ---------------------------------------------------------------- val
+def _bce(logit: np.ndarray, y: np.ndarray) -> float:
+    z, y = logit.astype(np.float64), y.astype(np.float64)
     return float(np.mean(np.maximum(z, 0) - z * y + np.log1p(np.exp(-np.abs(z)))))
 
 
-def _val_metrics(df: pd.DataFrame) -> dict:
-    if df.label.nunique() < 2:
+def _validate(model, val_df: pd.DataFrame, cfg: TrainConfig, device) -> dict:
+    """{"auc_frame", "bce"} trên FF++ val. Một lớp hoặc logit/metric không hữu hạn -> ValueError."""
+    y = val_df.label.to_numpy(int)
+    if len(np.unique(y)) < 2:
         raise ValueError("Val chỉ có một lớp: không tính được AUC")
-    if not np.isfinite(df.logit.to_numpy(np.float64)).all():
+    lg = score_frames(model, val_df, cfg.batch_size, device, cfg.num_workers, "val")
+    if not np.isfinite(lg).all():
         raise ValueError("Val có logit không hữu hạn")
-    v = video_scores(df)
-    m = {"auc_video": auc(v.label, v.score), "auc_frame": auc(df.label, df.logit), "bce": _bce(df)}
-    if not all(np.isfinite(x) for x in m.values()):
+    m = {"auc_frame": float(auc(y, lg)), "bce": _bce(lg, y)}
+    if not all(np.isfinite(v) for v in m.values()):
         raise ValueError(f"Metric val không hữu hạn: {m}")
     return m
 
 
-# ---------------------------------------------------------------- tiện ích
+# ---------------------------------------------------------------- checkpoint / log
 def _atomic_save(obj, path: Path) -> None:
     path = Path(path)
     tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
     torch.save(obj, tmp)
     os.replace(tmp, path)
-
-
-def save_last(path: Path, payload: dict) -> None:
-    _atomic_save(payload, path)
-
-
-def _append_jsonl(path: Path, rec: dict) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec) + "\n")
-
-
-def _truncate_jsonl(path: Path, step: int) -> None:
-    if not path.exists():
-        return
-    keep = [ln for ln in path.read_text(encoding="utf-8").splitlines()
-            if ln.strip() and json.loads(ln)["step"] <= step]
-    path.write_text("".join(ln + "\n" for ln in keep), encoding="utf-8")
 
 
 def _rng_state() -> dict:
@@ -172,66 +161,47 @@ def _set_rng_state(s: dict) -> None:
     random.setstate(s["python"])
 
 
-def _seed_worker(worker_id: int, seed: int) -> None:
-    """worker_init_fn cấp module (pickle được khi Windows dùng spawn); bọc bằng functools.partial(seed=...).
-    OpenCV mỗi worker chỉ 1 luồng: song song đã nằm ở số worker, nhiều luồng/worker chỉ giành CPU của nhau."""
-    import cv2
-
-    cv2.setNumThreads(1)
-    s = (seed * 1_000_003 + worker_id) % (2**32)
-    np.random.seed(s)
-    random.seed(s)
-    torch.manual_seed(s)
+def _append_log(path: Path, row: dict) -> None:
+    new = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=LOG_COLS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
 
 
-def _epoch_batches(n: int, bs: int, seed: int, epoch: int) -> list[list[int]]:
-    """Batch cân bằng: mỗi batch đúng bs/2 mục real (chỉ số chẵn) + bs/2 mục fake (chỉ số lẻ).
-
-    Xáo riêng danh sách chẵn và lẻ bằng cùng Generator(seed, epoch), ghép từng nửa, drop_last theo danh sách
-    ngắn hơn, rồi xáo thứ tự trong batch. Tất định theo (seed, epoch) nên resume suy ra vị trí từ step.
-    """
-    if bs < 2 or bs % 2:
-        raise ValueError(f"batch_size phải chẵn và >= 2 (nửa real, nửa fake), nhận {bs}")
-    g = torch.Generator().manual_seed(seed * 100_003 + epoch)
-    real = torch.arange(0, n, 2)[torch.randperm((n + 1) // 2, generator=g)]
-    fake = torch.arange(1, n, 2)[torch.randperm(n // 2, generator=g)]
-    h = bs // 2
-    out = []
-    for b in range(min(len(real), len(fake)) // h):  # drop_last
-        idx = torch.cat([real[b * h:(b + 1) * h], fake[b * h:(b + 1) * h]])
-        out.append(idx[torch.randperm(bs, generator=g)].tolist())
-    return out
+def _truncate_log(path: Path, epoch: int) -> None:
+    """Bỏ các dòng ghi sau last.pt (epoch > epoch đã lưu)."""
+    if not path.exists():
+        return
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = [r for r in csv.DictReader(f) if int(r["epoch"]) <= epoch]
+    path.unlink()
+    for r in rows:
+        _append_log(path, r)
 
 
-def _video_of(ds, idx: int) -> str:
-    """tid của frame gốc ở khe idx (real ở idx chẵn, fake lẻ cùng khe; fake có thể đã bốc lại frame)."""
-    k = idx // 2
-    return str(ds.real_frames[k % len(ds.real_frames)][0])
-
-
-def _reconcile_best(path: Path, step: int, best, best_state) -> None:
-    """Sau resume, best.pt phải khớp `best` trong last.pt. best.pt ghi ở step > last.step (mồ côi) bị bỏ;
-    nếu last.pt có best_state thì ghi lại best.pt từ đó, không thì xóa (chưa có best)."""
+def _reconcile_best(path: Path, best, best_state) -> None:
+    """best.pt phải khớp `best` trong last.pt: best.pt ghi sau last.pt (mồ côi) được ghi lại từ best_state."""
     on_disk = None
     if path.exists():
-        on_disk = int(torch.load(path, map_location="cpu", weights_only=False)["step"])
-    want = None if best is None else int(best["step"])
+        on_disk = int(torch.load(path, map_location="cpu", weights_only=False)["epoch"])
+    want = None if best is None else int(best["epoch"])
     if on_disk == want:
         return
     path.unlink(missing_ok=True)
-    if best is not None and best_state is not None:
+    if best is not None:
         _atomic_save({"trainable": best_state, **best}, path)
 
 
 # ---------------------------------------------------------------- train
 def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision_config=None,
-          allow_cpu: bool = False, log_every: int = 20, device=None) -> Path:
+          allow_cpu: bool = False, device=None) -> Path:
     """Huấn luyện một run, trả thư mục run. Không CUDA và allow_cpu=False -> RuntimeError."""
     has_cuda = torch.cuda.is_available()
     if not has_cuda and not allow_cpu:
         raise RuntimeError("Không có CUDA: train cần GPU (allow_cpu=True chỉ dành cho test).")
     device = torch.device(device or ("cuda" if has_cuda else "cpu"))
-    allow_read("train", "ffpp_train")
 
     d = prepare_run_dir(cfg, resume=resume, force=force)
     if resume and not (d / "last.pt").exists():
@@ -245,95 +215,94 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     if not resume:  # ghi sau khi dựng model để có commit HF đã resolve
         write_run_info(d, cfg, {"model_commit": commit})
     else:
-        info = json.loads((d / "run_info.json").read_text(encoding="utf-8")) if (d / "run_info.json").exists() else {}
+        p = d / "run_info.json"
+        info = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
         if info.get("model_commit") != commit:
             raise ValueError(f"model_commit khác run cũ ({info.get('model_commit')} != {commit}); không resume")
+
+    ds = TrainList(cfg.data_root, cfg.arm, cfg.seed, cfg.p_jpeg, cfg.jpeg_q)  # tự gọi allow_read train/aug
+    allow_read("train", "ffpp_val")
+    val_df = frames(cfg.data_root, "ffpp", "val")
+    labels = ds.items.label.to_numpy(int)
+    sources = ds.items.source.to_numpy(str)
+    vids = ds.items.video_id.astype(str).to_numpy()
+    n = len(ds)
+    if n == 0:
+        raise ValueError("Tập train rỗng")
+    per_epoch = math.ceil(n / cfg.batch_size)
+    total = cfg.max_epochs * per_epoch
+
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     from transformers import get_cosine_schedule_with_warmup
-    sched = get_cosine_schedule_with_warmup(opt, int(cfg.warmup_frac * cfg.total_steps), cfg.total_steps)
+    sched = get_cosine_schedule_with_warmup(opt, int(cfg.warmup_frac * total), total)
 
-    step, best, best_state = 0, None, None  # best = {"step", "auc_video", "bce"} | None
+    epoch, step, bad = 0, 0, 0
+    best, best_state = None, None  # best = {"epoch", "step", "auc_frame", "bce"}
     if resume:
         ck = torch.load(d / "last.pt", map_location="cpu", weights_only=False)
         model.load_trainable(ck["trainable"])
         opt.load_state_dict(ck["optimizer"])
         sched.load_state_dict(ck["scheduler"])
         _set_rng_state(ck["rng"])
-        step, best, best_state = int(ck["step"]), ck["best"], ck.get("best_state")
-        _reconcile_best(d / "best.pt", step, best, best_state)
-        _truncate_jsonl(d / "val_curve.jsonl", step)
-        _truncate_jsonl(d / "train_log.jsonl", step)
+        epoch, step, bad = int(ck["epoch"]), int(ck["step"]), int(ck["bad_epochs"])
+        best, best_state = ck["best"], ck["best_state"]
+        _reconcile_best(d / "best.pt", best, best_state)
+        _truncate_log(d / "train_log.csv", epoch)
 
-    ds = build_train_dataset(cfg)
-    accum = cfg.grad_accum
-    per_epoch = len(_epoch_batches(len(ds), cfg.batch_size, cfg.seed, 0))
-    if per_epoch < 1:
-        raise ValueError("Dữ liệu quá nhỏ: không đủ một batch/epoch")
-    micro = step * accum  # số micro-batch đã dùng
+    name = run_name_of(cfg)
     model.train()
-
-    def do_val(s: int):
-        nonlocal best, best_state
-        m = _val_metrics(val_scores(model, cfg, device=device))
-        _append_jsonl(d / "val_curve.jsonl", {"step": s, **m})
-        if is_better((m["auc_video"], m["bce"]), None if best is None else (best["auc_video"], best["bce"])):
-            best = {"step": s, "auc_video": m["auc_video"], "bce": m["bce"]}
-            best_state = model.trainable_state_dict()
-            _atomic_save({"trainable": best_state, **best}, d / "best.pt")
-
-    def fail(s: int, vids: list, loss):
-        err = {"step": s, "loss": float(loss), "video_ids": sorted(set(vids))}
-        write_json_atomic(err, d / "error.json")
-        pb.close()
-        raise FloatingPointError(f"Loss không hữu hạn ở step {s}: {float(loss)}; video_id={err['video_ids']}")
-
-    acc_loss, acc_n, acc_vids = 0.0, 0, []  # ngoài vòng epoch: một step luôn đủ `accum` micro-batch
-    run_name = cfg.mode
-    pb = progress.bar(total=cfg.total_steps, initial=step, desc=f"train {run_name} seed{cfg.seed}", unit="step")
-    if best is not None:
-        pb.set_postfix(best_auc=f"{best['auc_video']:.4f}")
-    while step < cfg.total_steps:
-        epoch, off = divmod(micro, per_epoch)
+    while epoch < cfg.max_epochs and bad < cfg.patience:
+        epoch += 1
+        t0 = time.perf_counter()
         ds.set_epoch(epoch)
-        batches = _epoch_batches(len(ds), cfg.batch_size, cfg.seed, epoch)[off:]
-        loader = torch.utils.data.DataLoader(
-            ds, batch_sampler=batches, **loader_kwargs(cfg.num_workers, device, cfg.seed))
-        for bi, batch in enumerate(loader):
+        batches = epoch_batches(n, cfg.batch_size, cfg.seed, epoch)
+        loader = torch.utils.data.DataLoader(ds, batch_sampler=batches,
+                                             **loader_kwargs(cfg.num_workers, device, cfg.seed))
+        loss_sum, n_jpeg = 0.0, 0
+        pb = progress.bar(loader, total=len(batches), desc=f"train {name} e{epoch}/{cfg.max_epochs}", unit="batch")
+        for bi, batch in enumerate(pb):
             x = batch["image"].to(device, non_blocking=True)
-            tg = {k: v.to(device, non_blocking=True) for k, v in batch["targets"].items() if torch.is_tensor(v)}
-            acc_vids += [_video_of(ds, i) for i in batches[bi]]
+            y = batch["label"].to(device=device, dtype=torch.float32, non_blocking=True)
             with _autocast(device):
-                loss, _ = model.head.loss(model(x), tg)
+                loss, _ = model.head.loss(model(x), {"L0": y})
             if not torch.isfinite(loss):
-                fail(step + 1, acc_vids, loss.detach())
-            (loss / accum).backward()
-            acc_loss += float(loss.detach())
-            acc_n += 1
-            micro += 1
-            if acc_n < accum:
-                continue
-            gn = float(torch.nn.utils.clip_grad_norm_(params, 1.0))
+                err = {"epoch": epoch, "step": step + 1, "loss": float(loss.detach()),
+                       "video_ids": sorted(set(vids[batches[bi]].tolist()))}
+                write_json_atomic(err, d / "error.json")
+                pb.close()
+                raise FloatingPointError(f"Loss không hữu hạn ở epoch {epoch} step {step + 1}; "
+                                         f"video_id={err['video_ids']}")
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
             sched.step()
             opt.zero_grad(set_to_none=True)
             step += 1
-            pb.update(1)
-            if step % log_every == 0 or step == cfg.total_steps:
-                pb.set_postfix(loss=f"{acc_loss / acc_n:.4f}",
-                               best_auc="-" if best is None else f"{best['auc_video']:.4f}")
-                _append_jsonl(d / "train_log.jsonl", {"step": step, "loss": acc_loss / acc_n,
-                                                      "lr": sched.get_last_lr()[0], "grad_norm": gn})
-            acc_loss, acc_n, acc_vids = 0.0, 0, []
-            last = step == cfg.total_steps
-            if step % cfg.eval_every == 0 or last:
-                do_val(step)
-            if step % cfg.ckpt_every == 0 or last:
-                save_last(d / "last.pt", {"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
-                                          "scheduler": sched.state_dict(), "rng": _rng_state(),
-                                          "step": step, "best": best, "best_state": best_state})
-            if last:
-                break
-    pb.close()
-    (d / "done.flag").write_text(f"step={step}\n", encoding="utf-8")
+            loss_sum += float(loss.detach()) * len(x)
+            n_jpeg += int(batch["jpeg"].sum())
+            pb.set_postfix(loss=f"{float(loss.detach()):.4f}")
+        pb.close()
+
+        m = _validate(model, val_df, cfg, device)
+        old_auc = None if best is None else best["auc_frame"]
+        if is_better((m["auc_frame"], m["bce"]), None if best is None else (best["auc_frame"], best["bce"])):
+            best = {"epoch": epoch, "step": step, "auc_frame": m["auc_frame"], "bce": m["bce"]}
+            best_state = model.trainable_state_dict()
+            _atomic_save({"trainable": best_state, **best}, d / "best.pt")
+        bad = 0 if old_auc is None or m["auc_frame"] > old_auc + TOL else bad + 1
+        _append_log(d / "train_log.csv", {
+            "epoch": epoch, "step": step, "train_loss": loss_sum / n, "lr": sched.get_last_lr()[0],
+            "val_auc_frame": m["auc_frame"], "val_bce": m["bce"],
+            "frac_real": float(np.mean(labels == 0)), "frac_rep": float(np.mean(sources == "rep")),
+            "frac_seam": float(np.mean(sources == "seam")), "frac_jpeg": n_jpeg / n,
+            "seconds": time.perf_counter() - t0})
+        _atomic_save({"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
+                      "scheduler": sched.state_dict(), "rng": _rng_state(), "epoch": epoch, "step": step,
+                      "best": best, "best_state": best_state, "bad_epochs": bad}, d / "last.pt")
+        print(f"[{name}] epoch {epoch}: loss {loss_sum / n:.4f}, val AUC {m['auc_frame']:.4f}, "
+              f"BCE {m['bce']:.4f}, best e{best['epoch']}, bad {bad}/{cfg.patience}", file=sys.stderr, flush=True)
+
+    write_json_atomic({"epochs_run": epoch, "best_epoch": None if best is None else best["epoch"],
+                       "stopped_early": bad >= cfg.patience, "total_steps": step}, d / "done.flag")
     return d
