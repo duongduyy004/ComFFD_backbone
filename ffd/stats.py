@@ -86,67 +86,6 @@ def delong_paired(y, s1, s2) -> tuple[float, float, float]:
     return d, float(z), float(2 * norm.sf(abs(z)))
 
 
-def paired_frames(a: pd.DataFrame, b: pd.DataFrame, key="video_id"):
-    """Giao theo key, cùng thứ tự (sắp theo key) ở cả hai; n_dropped = số key chỉ ở một bên."""
-    for name, df in (("a", a), ("b", b)):
-        dup = df[key][df[key].duplicated()]
-        if len(dup):
-            raise ValueError(f"bảng {name} có {key} trùng (ví dụ {dup.iloc[0]!r}); cần bảng cấp video")
-    ka, kb = set(a[key]), set(b[key])
-    common = sorted(ka & kb)
-    n_dropped = len(ka ^ kb)
-    sa = a[a[key].isin(common)].sort_values(key).reset_index(drop=True)
-    sb = b[b[key].isin(common)].sort_values(key).reset_index(drop=True)
-    return sa, sb, n_dropped
-
-
-def delong_paired_clustered(y, s1, s2, clusters) -> tuple[float, float, float]:
-    """DeLong ghép cặp có gom cụm (Obuchowski 1997, Biometrics 53:567, doi:10.2307/2533958): (AUC1 - AUC2, z, p).
-
-    Mẫu cùng cụm (vd real + mọi fake của cùng video nguồn tid) có tương quan; DeLong thường coi chúng độc lập nên
-    p-value lạc quan. Ở đây placement V10/V01 được cộng theo cụm: với cụm i có m_i dương, n_i âm,
-      X_ir = tổng V10 của dương trong i,  Y_ir = tổng V01 của âm trong i,  I = số cụm,
-      S10[r,s] = I/((I-1) m) Σ_i (X_ir - m_i θ_r)(X_is - m_i θ_s),  S01 tương tự với Y, n_i, n,
-      S11[r,s] = I/(I-1) Σ_i (X_ir - m_i θ_r)(Y_is - n_i θ_s),
-      Cov(θ_r, θ_s) = S10[r,s]/m + S01[r,s]/n + (S11[r,s] + S11[s,r])/(m n).
-    Mỗi mẫu một cụm -> xấp xỉ DeLong thường (lệch bậc 1/I). Công thức viết lại từ trí nhớ, chưa đối chiếu từng ký hiệu
-    với bản gốc; kiểm bằng test tính chất và mô phỏng hiệu chuẩn (tests/test_stats.py)."""
-    y = np.asarray(y)
-    s1, s2 = np.asarray(s1, float), np.asarray(s2, float)
-    clusters = np.asarray(clusters)
-    if not (len(y) == len(s1) == len(s2) == len(clusters)):
-        raise ValueError("y, s1, s2, clusters phải cùng độ dài")
-    if len(np.unique(y)) != 2:
-        raise ValueError("y phải có đúng hai lớp")
-    v10, v01, m, n = _components(y, [s1, s2])
-    _, cid = np.unique(clusters, return_inverse=True)
-    I = int(cid.max()) + 1
-    if I < 2:
-        raise ValueError("cần >= 2 cụm")
-    pos = y == 1
-    cp, cn = cid[pos], cid[~pos]
-    mi = np.bincount(cp, minlength=I).astype(float)
-    ni = np.bincount(cn, minlength=I).astype(float)
-    theta = v10.mean(axis=1)
-    X = np.stack([np.bincount(cp, weights=v10[r], minlength=I) for r in range(2)]) - np.outer(theta, mi)
-    Y = np.stack([np.bincount(cn, weights=v01[r], minlength=I) for r in range(2)]) - np.outer(theta, ni)
-    k = I / (I - 1)
-    S10 = k * (X @ X.T) / m
-    S01 = k * (Y @ Y.T) / n
-    S11 = k * (X @ Y.T)
-    C = S10 / m + S01 / n + (S11 + S11.T) / (m * n)
-    d = float(theta[0] - theta[1])
-    var = float(C[0, 0] + C[1, 1] - 2 * C[0, 1])
-    if not np.isfinite(var):
-        raise ValueError("phương sai DeLong gom cụm không hữu hạn")
-    if var <= 1e-18:
-        if abs(d) <= 1e-12:
-            return d, 0.0, 1.0
-        return d, float(np.copysign(np.inf, d)), 0.0
-    z = d / np.sqrt(var)
-    return d, float(z), float(2 * norm.sf(abs(z)))
-
-
 def paired_bootstrap_diff(y, s1, s2, n=2000, seed=0) -> tuple[float, float, float]:
     """(AUC(s2) - AUC(s1), lo, hi): resample frame có hoàn lại (cùng chỉ số cho cả hai bộ điểm), CI 95% percentile.
     Lần rút chỉ có một lớp bị bỏ và rút lại cho đủ n lần hợp lệ."""
