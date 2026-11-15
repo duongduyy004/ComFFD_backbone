@@ -1,7 +1,7 @@
 """Fixture dùng chung cho test ffd. Trạng thái: chưa chạy thử.
 
-`ffpp_synth` = thư mục ffpp_root TỔNG HỢP (MINH HỌA, không phải FF++ thật) do `synth_ffpp.make_ffpp_root` sinh
-đúng hợp đồng dữ liệu (ffpp_raw/, ffpp_aug/ + manifest). Không import preprocessing. Scope session.
+`data_root` = thư mục data_root TỔNG HỢP (MINH HỌA, không phải FF++/Celeb-DF thật) do `synth_ffpp.make_data_root`
+sinh đúng hợp đồng dữ liệu (ffpp/, celebdf/). Không import preprocessing. Scope session.
 """
 import pytest
 
@@ -20,11 +20,11 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(scope="session")
-def ffpp_synth(tmp_path_factory):
-    """Path tới ffpp_root tổng hợp (MINH HỌA): 8/3/3 video nguồn train/val/test, real + 5 method."""
-    from synth_ffpp import make_ffpp_root
+def data_root(tmp_path_factory):
+    """Path tới data_root tổng hợp (MINH HỌA): 4/2/2 video nguồn train/val/test, real + 5 method, 4 frame/video."""
+    from synth_ffpp import make_data_root
 
-    return make_ffpp_root(tmp_path_factory.mktemp("ffpp_root"))
+    return make_data_root(tmp_path_factory.mktemp("data_root"))
 
 
 @pytest.fixture
@@ -34,6 +34,6 @@ def tiny():
     from transformers import CLIPVisionConfig
 
     vc = CLIPVisionConfig(hidden_size=32, intermediate_size=37, num_hidden_layers=24,
-                          num_attention_heads=4, image_size=336, patch_size=14)
+                          num_attention_heads=4, image_size=224, patch_size=14)
     return dict(model_name="local-tiny", lora_r=4, lora_alpha=8, lora_dropout=0.0,
                 lora_targets=("q_proj", "v_proj"), grad_checkpointing=False, vision_config=vc)

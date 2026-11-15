@@ -1,6 +1,6 @@
-"""Smoke test cho fixture ffpp_synth (dữ liệu tổng hợp, MINH HỌA). Trạng thái: chưa chạy thử."""
+"""Smoke test cho fixture data_root (dữ liệu tổng hợp, MINH HỌA). Trạng thái: chưa chạy thử."""
 
 
-def test_ffpp_synth_builds(ffpp_synth):
-    assert (ffpp_synth / "ffpp_raw" / "manifest.parquet").exists()
-    assert (ffpp_synth / "ffpp_aug" / "manifest.parquet").exists()
+def test_data_root_builds(data_root):
+    assert (data_root / "ffpp" / "manifest_raw.parquet").exists()
+    assert (data_root / "celebdf" / "manifest.parquet").exists()

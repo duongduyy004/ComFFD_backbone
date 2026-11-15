@@ -17,12 +17,12 @@ def assert_subset(subset: str, allowed: set, what: str) -> None:
     if subset not in allowed:
         raise LeakageError(f"{what}: subset '{subset}' không được phép (chỉ {sorted(allowed)})")
 
-_TRAIN_ALLOWED = {"ffpp_train", "ffpp_val"}
+_TRAIN_ALLOWED = {"ffpp_train", "ffpp_val", "ffpp_aug"}
 _EVAL_ALLOWED = {"ffpp_test"}  # chỉ tập test, không train/val
 
 
 def allow_read(stage: Literal["train", "eval"], what: str) -> None:
-    """Giai đoạn `train` chỉ được đọc nguồn train/val (ffpp_train, ffpp_val); test hay nguồn lạ -> LeakageError."""
+    """Giai đoạn `train` chỉ được đọc nguồn train/val/aug (ffpp_train, ffpp_val, ffpp_aug); test hay nguồn lạ -> LeakageError."""
     if stage not in ("train", "eval"):
         raise ValueError(f"stage phải là 'train' hoặc 'eval', nhận {stage!r}")
     if stage == "train" and what not in _TRAIN_ALLOWED:

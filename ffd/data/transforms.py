@@ -1,4 +1,4 @@
-"""Transform ảnh train/eval: JPEG (nếu chưa có), lật ngang, BGR->RGB, chuẩn hóa CLIP.
+"""Transform ảnh train/eval (đúng 224x224, không resize): JPEG (xác suất p_jpeg), lật ngang, BGR->RGB, chuẩn hóa CLIP.
 
 JPEG gọi qua `ffd.io_utils.jpeg` (tra tên lúc gọi, để test đếm được tại một điểm).
 Trạng thái: chưa chạy thử.
@@ -12,7 +12,7 @@ from .. import io_utils as _io
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
-SIZE = 336
+SIZE = 224
 _MEAN = torch.tensor(CLIP_MEAN).view(3, 1, 1)
 _STD = torch.tensor(CLIP_STD).view(3, 1, 1)
 
@@ -24,15 +24,16 @@ def _to_tensor(img_bgr: np.ndarray) -> torch.Tensor:
     return (x - _MEAN) / _STD
 
 
-def train_transform(img_bgr: np.ndarray, rng: np.random.Generator, already_jpeg: bool,
-                    jpeg_q: tuple = (75, 95)) -> torch.Tensor:
-    """JPEG q ~ U(jpeg_q) nếu chưa có (real, fake_raw); lật p=0.5. Trả FloatTensor 3x336x336."""
-    if not already_jpeg:
-        q = int(rng.integers(jpeg_q[0], jpeg_q[1] + 1))
+def train_transform(img_bgr: np.ndarray, rng: np.random.Generator, p_jpeg: float,
+                    q: int) -> tuple[torch.Tensor, bool]:
+    """JPEG chất lượng q với xác suất p_jpeg, rồi lật ngang p=0.5. Trả (Tensor 3x224x224, đã JPEG?).
+    Luôn bốc rng.random() cho JPEG để chuỗi ngẫu nhiên không phụ thuộc p_jpeg."""
+    did = bool(rng.random() < p_jpeg)
+    if did:
         img_bgr = _io.jpeg(img_bgr, q)
     if rng.random() < 0.5:
         img_bgr = img_bgr[:, ::-1]
-    return _to_tensor(img_bgr)
+    return _to_tensor(img_bgr), did
 
 
 def eval_transform(img_bgr: np.ndarray) -> torch.Tensor:
