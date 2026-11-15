@@ -69,10 +69,15 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
     cfg = _cfg_from_info(info, data_root)
     if config_hash(cfg) != info.get("config_hash"):
         raise ValueError(f"config dựng lại có hash {config_hash(cfg)} != config_hash run_info {info.get('config_hash')}")
-    rec = info.get("data_hashes") or {}
+    rec = info.get("data_hashes")
+    if not rec:
+        raise ValueError("run_info thiếu data_hashes; không kiểm được dữ liệu có đổi không")
     rec_man = rec.get("manifest_sha256") or {}
-    if D.data_hashes(cfg.data_root)["manifest_sha256"]["raw"] != rec_man.get("raw"):
-        raise ValueError("manifest_raw khác lúc train (dữ liệu tiền xử lý đã đổi); không chấm điểm")
+    now = D.data_hashes(cfg.data_root)
+    if now["manifest_sha256"]["raw"] != rec_man.get("raw"):
+        raise ValueError("manifest_raw.parquet khác lúc train (dữ liệu tiền xử lý đã đổi); không chấm điểm")
+    if now["params_json_sha256"] != rec.get("params_json_sha256"):
+        raise ValueError("params.json khác lúc train (tham số tiền xử lý đã đổi); không chấm điểm")
 
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     # Seed như train() trước khi dựng model: với vision_config ngẫu nhiên (test) phần đóng băng phải tái tạo y hệt.
@@ -85,6 +90,8 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
     model.eval()
 
     done = json.loads((run / "done.flag").read_text(encoding="utf-8"))
+    if done.get("best_epoch") is None:
+        raise ValueError(f"done.flag không có best_epoch (không có checkpoint tốt nhất): {run}")
     res = {
         "arm": cfg.arm,
         "config": {
@@ -102,6 +109,8 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
         if ds == "celebdf" and not (D.celebdf_dir(cfg.data_root) / "manifest.parquet").exists():
             res[ds] = {"skipped": f"không có {cfg.data_root}/celebdf/manifest.parquet"}
             continue
+        if ds == "celebdf" and rec_man.get("celebdf") is not None                 and now["manifest_sha256"]["celebdf"] != rec_man["celebdf"]:
+            raise ValueError("celebdf/manifest.parquet khác lúc train; không chấm điểm")
         df, dropped = _frames_of(cfg, ds)
         df = df.copy()
         df["logit"] = score_frames(model, df, batch_size, device, cfg.num_workers, f"eval {ds}").astype("float64")

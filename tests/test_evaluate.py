@@ -85,3 +85,67 @@ def test_eval_guard():
             allow_read("eval", w)
     with pytest.raises(LeakageError):
         allow_read("train", "ffpp_test")
+
+
+def _copy_run(trained, tmp_path):
+    dst = tmp_path / "run"
+    shutil.copytree(trained[0], dst)
+    return dst, trained[1]
+
+
+@pytest.mark.parametrize("missing", ["done.flag", "best.pt"])
+def test_eval_refuses_unfinished_run(trained, data_root, tmp_path, missing):
+    run, vc = _copy_run(trained, tmp_path)
+    (run / missing).unlink()
+    with pytest.raises(ValueError, match=missing):
+        evaluate_run(run, data_root=data_root, vision_config=vc, device="cpu")
+
+
+def test_eval_rejects_model_commit_mismatch(trained, data_root, tmp_path):
+    run, vc = _copy_run(trained, tmp_path)
+    p = run / "run_info.json"
+    info = json.loads(p.read_text(encoding="utf-8"))
+    info["model_commit"] = "khac"
+    p.write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="commit"):
+        evaluate_run(run, data_root=data_root, vision_config=vc, device="cpu")
+
+
+def test_eval_requires_data_hashes(trained, data_root, tmp_path):
+    run, vc = _copy_run(trained, tmp_path)
+    p = run / "run_info.json"
+    info = json.loads(p.read_text(encoding="utf-8"))
+    del info["data_hashes"]
+    p.write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="thiếu data_hashes"):
+        evaluate_run(run, data_root=data_root, vision_config=vc, device="cpu")
+
+
+def test_eval_rejects_best_epoch_none(trained, data_root, tmp_path):
+    run, vc = _copy_run(trained, tmp_path)
+    p = run / "done.flag"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["best_epoch"] = None
+    p.write_text(json.dumps(d), encoding="utf-8")
+    with pytest.raises(ValueError, match="best_epoch"):
+        evaluate_run(run, data_root=data_root, vision_config=vc, device="cpu")
+
+
+def test_eval_rejects_changed_params_json(trained, data_root, tmp_path):
+    root = tmp_path / "dr"
+    shutil.copytree(data_root, root)
+    p = root / "ffpp" / "params.json"
+    p.write_bytes(p.read_bytes() + b"\n ")
+    with pytest.raises(ValueError, match="params.json"):
+        _ev(trained, data_root=root)
+
+
+def test_eval_rejects_changed_celebdf_manifest(trained, data_root, tmp_path):
+    root = tmp_path / "dr"
+    shutil.copytree(data_root, root)
+    m = root / "celebdf" / "manifest.parquet"
+    pd.read_parquet(m).iloc[:-1].to_parquet(m)
+    with pytest.raises(ValueError, match="celebdf"):
+        _ev(trained, data_root=root)
+    # chỉ chấm val thì không đụng celebdf
+    assert _ev(trained, data_root=root, datasets=("val",)).exists()
