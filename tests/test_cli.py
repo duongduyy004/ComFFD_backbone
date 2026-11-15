@@ -16,6 +16,7 @@ def test_cli_parses_commands():
     for argv in (["pilot", "--config", "c.yaml", "--set", "lr=1e-4"], ["main", "--config", "c.yaml"],
                  ["train", "--config", "c.yaml", "--resume"], ["train", "--config", "c.yaml", "--force"],
                  ["eval", "--run", "r"], ["eval", "--run", "r", "--data-root", "d"],
+                 ["eval", "--run", "r", "--datasets", "val", "--force", "--no-progress"],
                  ["compare", "--ckpt-root", "ck"], ["smoke", "--config", "c.yaml", "--steps", "5"]):
         a = p.parse_args(argv)
         assert a.cmd == argv[0] and callable(a.fn)
@@ -74,3 +75,26 @@ def test_smoke_dump_samples(data_root, tmp_path):
     for kind in ("rep", "seam"):
         assert dump_samples(data_root, kind, tmp_path) == N_SAMPLES
     assert len(list(tmp_path.glob("rep_*.png"))) == len(list(tmp_path.glob("seam_*.png"))) == 16
+
+
+def test_eval_refuses_overwrite_without_force(tmp_path):
+    run = tmp_path / "raw"
+    run.mkdir()
+    (run / "result.json").write_text("{}")
+    r = run_cli(["eval", "--run", str(run)])
+    assert r.returncode != 0 and "--force" in r.stderr and "Traceback" not in r.stderr
+    assert (run / "result.json").read_text() == "{}"
+
+
+def test_eval_pilot_run_only_val(tmp_path):
+    """Run pilot (run_name pilot/...) không được chấm ffpp_test/celebdf, kể cả với --force."""
+    import json
+
+    run = tmp_path / "pilot" / "lr1e-4_p0.5"
+    run.mkdir(parents=True)
+    (run / "run_info.json").write_text(json.dumps({"config": {"run_name": "pilot/lr1e-4_p0.5"}}))
+    for ds in (["--datasets", "val,ffpp_test"], [], ["--datasets", "celebdf", "--force"]):
+        r = run_cli(["eval", "--run", str(run), *ds])
+        assert r.returncode != 0 and "pilot" in r.stderr and "Traceback" not in r.stderr
+    r = run_cli(["eval", "--run", str(run), "--datasets", "bogus"])
+    assert r.returncode != 0 and "bogus" in r.stderr

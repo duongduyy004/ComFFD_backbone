@@ -165,3 +165,17 @@ def test_score_frames_order(cfg_tiny, tiny):
     a = T.score_frames(m, df, 2, "cpu", 0, "t")
     b = T.score_frames(m, df.iloc[::-1], 3, "cpu", 0, "t")
     assert a.shape == (5,) and np.allclose(a, b[::-1], atol=1e-5)
+
+
+def test_stopped_early_false_when_patience_hits_at_max_epochs(cfg_tiny, tiny, monkeypatch):
+    """Đủ patience đúng ở epoch cuối (= max_epochs) -> stopped_early False (dừng vì hết epoch)."""
+    scripted(monkeypatch, [0.6, 0.6, 0.6])
+    d = run(dataclasses.replace(cfg_tiny, max_epochs=3, patience=2, batch_size=96), tiny)
+    done = json.loads((d / "done.flag").read_text())
+    assert done["epochs_run"] == 3 and done["stopped_early"] is False
+
+
+def test_train_with_spawn_worker(cfg_tiny, tiny):
+    """Hồi quy spawn (Windows): DataLoader num_workers=1 phải pickle được dataset/worker_init_fn. 1 epoch, 1 bước."""
+    d = run(dataclasses.replace(cfg_tiny, max_epochs=1, num_workers=1, batch_size=96), tiny)
+    assert json.loads((d / "done.flag").read_text())["epochs_run"] == 1

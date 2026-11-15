@@ -1,4 +1,5 @@
-"""Dữ liệu train theo arm (raw, raw+rep).
+"""Đọc dữ liệu đã tiền xử lý từ đĩa: ffpp.py (manifest FF++/Celeb-DF, drops, hash), trainset.py (TrainList theo
+arm raw / raw_aug), transforms.py (transform train/eval, cần torch; không import ở đây).
 
-Trạng thái: chưa chạy thử. recipe.py thuần numpy; transforms.py và arms.py cần torch (không import ở đây).
+Trạng thái: chưa chạy thử trên dữ liệu thật.
 """

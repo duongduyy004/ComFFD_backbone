@@ -9,7 +9,8 @@ Quy ước:
 - Cuối mỗi epoch: val FF++ (frame, eval_transform) -> auc_frame, bce -> cập nhật best -> một dòng train_log.csv
   -> last.pt. Best theo (AUC frame, BCE): AUC hơn > 1e-4 thắng, hòa trong 1e-4 thì BCE thấp hơn.
   `bad_epochs` tăng khi AUC frame không vượt best cũ quá 1e-4 (hòa mà BCE tốt hơn vẫn cập nhật best.pt nhưng
-  vẫn tính là epoch xấu); dừng khi `bad_epochs >= patience` hoặc hết `max_epochs`.
+  vẫn tính là epoch xấu); dừng khi `bad_epochs >= patience` hoặc hết `max_epochs`. `stopped_early` chỉ True khi
+  dừng vì patience TRƯỚC max_epochs (đủ patience đúng ở epoch cuối -> False).
 - Resume chỉ ở biên epoch, từ last.pt; best.pt và train_log.csv được đưa về khớp last.pt (bỏ phần ghi sau nó).
 - Cột `seconds` = thời gian thực của epoch (train + val). `frac_real` = tỉ lệ ảnh nhãn 0 trong epoch;
   `frac_rep`/`frac_seam` = tỉ lệ ảnh nguồn rep/seam; `frac_jpeg` = tỉ lệ ảnh đã nén JPEG.
@@ -304,5 +305,5 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
               f"BCE {m['bce']:.4f}, best e{best['epoch']}, bad {bad}/{cfg.patience}", file=sys.stderr, flush=True)
 
     write_json_atomic({"epochs_run": epoch, "best_epoch": None if best is None else best["epoch"],
-                       "stopped_early": bad >= cfg.patience, "total_steps": step}, d / "done.flag")
+                       "stopped_early": bad >= cfg.patience and epoch < cfg.max_epochs, "total_steps": step}, d / "done.flag")
     return d

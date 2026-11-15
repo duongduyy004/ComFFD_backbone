@@ -2,7 +2,9 @@
 
 Quy ước:
 - Cần `done.flag`, `best.pt`, `run_info.json`; Detector dựng lại từ `run_info["config"]`, commit trunk phải bằng
-  `model_commit`; `manifest_sha256.raw` của data hiện tại phải bằng giá trị lúc train (lệch -> ValueError).
+  `model_commit`; `manifest_sha256.raw`, `params_json_sha256` (và manifest Celeb-DF nếu lúc train đã có) của data
+  hiện tại phải bằng giá trị lúc train (lệch -> ValueError). Mọi kiểm này chạy trước khi chấm: lỗi thì không ghi gì.
+- Chấm Celeb-DF -> `config.manifest_sha256.celebdf` = hash manifest Celeb-DF hiện tại (provenance).
 - `allow_read("eval", ...)` gọi ngay trước khi mở từng nguồn (ffpp_val / ffpp_test / celebdf).
 - scores_{dataset}.parquet: video_id, frame_idx, label, method, logit (dataset ∈ val, ffpp_test, celebdf).
 - Dataset không nằm trong `datasets` -> không có khóa trong result.json; celebdf thiếu dữ liệu ->
@@ -78,6 +80,11 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
         raise ValueError("manifest_raw.parquet khác lúc train (dữ liệu tiền xử lý đã đổi); không chấm điểm")
     if now["params_json_sha256"] != rec.get("params_json_sha256"):
         raise ValueError("params.json khác lúc train (tham số tiền xử lý đã đổi); không chấm điểm")
+    # Mọi kiểm hash dữ liệu làm trước khi chấm: lỗi -> không ghi scores/result nào.
+    celeb_ok = (D.celebdf_dir(cfg.data_root) / "manifest.parquet").exists()
+    celeb_rec = rec_man.get("celebdf")
+    if "celebdf" in datasets and celeb_ok and celeb_rec is not None and now["manifest_sha256"]["celebdf"] != celeb_rec:
+        raise ValueError("celebdf/manifest.parquet khác lúc train; không chấm điểm")
 
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     # Seed như train() trước khi dựng model: với vision_config ngẫu nhiên (test) phần đóng băng phải tái tạo y hệt.
@@ -106,11 +113,11 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
         "stopped_early": bool(done["stopped_early"]), "total_steps": int(done["total_steps"]),
     }
     for ds in datasets:
-        if ds == "celebdf" and not (D.celebdf_dir(cfg.data_root) / "manifest.parquet").exists():
+        if ds == "celebdf" and not celeb_ok:
             res[ds] = {"skipped": f"không có {cfg.data_root}/celebdf/manifest.parquet"}
             continue
-        if ds == "celebdf" and rec_man.get("celebdf") is not None                 and now["manifest_sha256"]["celebdf"] != rec_man["celebdf"]:
-            raise ValueError("celebdf/manifest.parquet khác lúc train; không chấm điểm")
+        if ds == "celebdf":  # provenance: hash manifest Celeb-DF thực sự được chấm
+            res["config"]["manifest_sha256"]["celebdf"] = now["manifest_sha256"]["celebdf"]
         df, dropped = _frames_of(cfg, ds)
         df = df.copy()
         df["logit"] = score_frames(model, df, batch_size, device, cfg.num_workers, f"eval {ds}").astype("float64")

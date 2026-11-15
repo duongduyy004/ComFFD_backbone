@@ -49,6 +49,8 @@ def test_result_json_schema(trained, data_root):
     assert r["ffpp_test"]["n_videos_dropped"] == 1
     assert r["arm"] == "raw" and r["epochs_run"] == 2 and r["config"]["lora"]["r"] == 4
     assert r["config"]["manifest_sha256"]["raw"] and r["config"]["params_json_sha256"]
+    from ffd.data.ffpp import data_hashes
+    assert r["config"]["manifest_sha256"]["celebdf"] == data_hashes(data_root)["manifest_sha256"]["celebdf"]
     for ds in ("val", "ffpp_test", "celebdf"):
         s = pd.read_parquet(trained[0] / f"scores_{ds}.parquet")
         assert list(s.columns) == ["video_id", "frame_idx", "label", "method", "logit"]
@@ -60,6 +62,7 @@ def test_eval_without_celebdf(trained, data_root, tmp_path):
     shutil.copytree(data_root, root, ignore=shutil.ignore_patterns("celebdf"))
     r = json.loads(_ev(trained, data_root=root).read_text(encoding="utf-8"))
     assert list(r["celebdf"]) == ["skipped"] and "celebdf/manifest.parquet" in r["celebdf"]["skipped"]
+    assert r["config"]["manifest_sha256"].get("celebdf") is None  # không chấm -> không ghi hash
     assert "auc" in r["ffpp_test"]
 
 
@@ -136,8 +139,12 @@ def test_eval_rejects_changed_params_json(trained, data_root, tmp_path):
     shutil.copytree(data_root, root)
     p = root / "ffpp" / "params.json"
     p.write_bytes(p.read_bytes() + b"\n ")
+    run, vc = _copy_run(trained, tmp_path)
+    for p in [*run.glob("scores_*.parquet"), run / "result.json"]:
+        p.unlink(missing_ok=True)
     with pytest.raises(ValueError, match="params.json"):
-        _ev(trained, data_root=root)
+        evaluate_run(run, data_root=root, vision_config=vc, device="cpu")
+    assert not list(run.glob("scores_*.parquet")) and not (run / "result.json").exists()  # không chấm gì
 
 
 def test_eval_rejects_changed_celebdf_manifest(trained, data_root, tmp_path):
@@ -145,7 +152,11 @@ def test_eval_rejects_changed_celebdf_manifest(trained, data_root, tmp_path):
     shutil.copytree(data_root, root)
     m = root / "celebdf" / "manifest.parquet"
     pd.read_parquet(m).iloc[:-1].to_parquet(m)
+    run, vc = _copy_run(trained, tmp_path)
+    for p in [*run.glob("scores_*.parquet"), run / "result.json"]:
+        p.unlink(missing_ok=True)
     with pytest.raises(ValueError, match="celebdf"):
-        _ev(trained, data_root=root)
+        evaluate_run(run, data_root=root, vision_config=vc, device="cpu")
+    assert not list(run.glob("scores_*.parquet"))  # kiểm trước vòng chấm: val cũng không bị ghi
     # chỉ chấm val thì không đụng celebdf
     assert _ev(trained, data_root=root, datasets=("val",)).exists()

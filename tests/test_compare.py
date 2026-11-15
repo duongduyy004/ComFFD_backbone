@@ -19,7 +19,8 @@ def _scores(ids, seed, shift):
 
 def _write_run(d, arm, celeb, shift):
     d.mkdir(parents=True)
-    res = {"arm": arm, "total_steps": 100 if arm == "raw" else 150}
+    res = {"arm": arm, "total_steps": 100 if arm == "raw" else 150,
+           "epochs_run": 10 if arm == "raw" else 12, "best_epoch": 5 if arm == "raw" else 7}
     for name in ("ffpp_test", "celebdf"):
         if name == "celebdf" and not celeb:
             res[name] = {"skipped": "không có data"}
@@ -50,6 +51,7 @@ def test_compare_json(two_runs):
     assert set(c["ffpp_test"]) == keys and set(c["celebdf"]) == keys
     assert c["ffpp_test"]["diff"] == pytest.approx(c["ffpp_test"]["auc_raw_aug"] - c["ffpp_test"]["auc_raw"])
     assert c["total_steps"] == {"raw": 100, "raw_aug": 150}
+    assert c["epochs_run"] == {"raw": 10, "raw_aug": 12} and c["best_epoch"] == {"raw": 5, "raw_aug": 7}
 
 
 def test_compare_rejects_mismatched_frames(two_runs):

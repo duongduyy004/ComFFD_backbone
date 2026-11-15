@@ -68,11 +68,33 @@ def _cmd_train(a):
     print(train(cfg, resume=a.resume, force=a.force))  # không allow_cpu
 
 
+EVAL_DATASETS = ("val", "ffpp_test", "celebdf")
+_HELD_OUT = ("ffpp_test", "celebdf")
+
+
 def _cmd_eval(a):
+    import json
+    from pathlib import Path
+
+    run = Path(a.run)
+    datasets = tuple(x.strip() for x in a.datasets.split(",") if x.strip())
+    bad = [x for x in datasets if x not in EVAL_DATASETS]
+    if bad or not datasets:
+        raise SystemExit(f"Lỗi eval: --datasets không hợp lệ {bad}; chỉ {list(EVAL_DATASETS)} (không rỗng)")
+    if (run / "result.json").exists() and not a.force:
+        raise SystemExit(f"Lỗi eval: {run / 'result.json'} đã có; dùng --force để chấm lại và ghi đè")
+    info_p = run / "run_info.json"
+    if info_p.exists():  # thiếu run_info -> evaluate_run báo lỗi
+        info = json.loads(info_p.read_text(encoding="utf-8"))
+        name = (info.get("config") or {}).get("run_name") or info.get("run_name") or ""
+        held = [x for x in datasets if x in _HELD_OUT]
+        if str(name).startswith("pilot/") and held:
+            raise SystemExit(f"Lỗi eval: run pilot ({name}) chỉ được chấm val, không chấm {held} (chống leakage); "
+                             "dùng --datasets val")
     from .evaluate import evaluate_run
 
     try:
-        print(evaluate_run(a.run, data_root=a.data_root))
+        print(evaluate_run(run, data_root=a.data_root, datasets=datasets))
     except ValueError as e:
         raise SystemExit(f"Lỗi eval: {e}") from e
 
@@ -125,6 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     e = sp.add_parser("eval", parents=[common], help="chấm best.pt của một run -> result.json")
     e.add_argument("--run", required=True)
     e.add_argument("--data-root", default=None, help="data_root trên máy eval (khác máy train); dữ liệu phải trùng hash")
+    e.add_argument("--datasets", default=",".join(EVAL_DATASETS),
+                   help="danh sách cách nhau bởi dấu phẩy (val,ffpp_test,celebdf); run pilot chỉ được val")
+    e.add_argument("--force", action="store_true", help="ghi đè result.json đã có")
     e.set_defaults(fn=_cmd_eval)
 
     c = sp.add_parser("compare", parents=[common], help="so sánh <ckpt_root>/raw và raw_aug -> compare.json")

@@ -57,7 +57,8 @@ def compare_runs(ckpt_root: Path) -> Path:
             out[name] = {"skipped": "; ".join(skipped)}
         else:
             out[name] = _compare_dataset(name, raw_dir, aug_dir)
-    out["total_steps"] = {"raw": r1.get("total_steps"), "raw_aug": r2.get("total_steps")}
+    for k in ("total_steps", "epochs_run", "best_epoch"):
+        out[k] = {"raw": r1.get(k), "raw_aug": r2.get(k)}
     out["note"] = NOTE
     path = ckpt_root / "compare.json"
     write_json_atomic(out, path)
