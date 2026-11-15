@@ -1,50 +1,34 @@
-"""TrainConfig, nạp YAML, hash config, khóa tham số theo prereg.
+"""TrainConfig v2, nạp YAML, hash config. Không còn prereg (exploratory, 1 run/arm).
 
-Trạng thái: chưa chạy thử.
+Trạng thái: chưa chạy thử trên GPU.
 """
 from __future__ import annotations
 
 import dataclasses
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import yaml
 
-MODES = ("raw", "raw+rep")  # spec augmentation can_bang_duong_noi §4
-# Tham số self-blend mặc định (trước đây ở compsynth_ff.composite, chuyển về đây 12/11). Giá trị giữ nguyên để hash
-# config/prereg không đổi. Khóa `selfblend` hiện không được code train dùng; chỉ còn vì là khóa prereg bắt buộc.
-DEFAULT_T = {"hue": 5.0, "sat": 0.10, "val": 0.10, "brightness": 10.0, "contrast": 0.10, "scale": 0.05, "shift": 2.0}
-# Khóa lấy từ prereg (cùng mọi lora_*) và không được override từ CLI. File prereg chỉ được chứa các khóa này.
-PREREG_KEYS = ("rho", "lr", "weight_decay", "warmup_frac", "total_steps", "eval_every",
-               "batch_size", "grad_accum", "selfblend", "model_name", "model_revision", "head", "tap_layers",
-               "grad_checkpointing")
-LORA_KEYS = ("lora_r", "lora_alpha", "lora_dropout", "lora_targets")
-# R3: file prereg phải ghi ĐỦ các khóa này (thiếu -> ValueError), để không khóa nào lấy ngầm từ config.yaml.
-PREREG_REQUIRED = PREREG_KEYS + LORA_KEYS
-_PATH_FIELDS = ("ffpp_root", "runs_root", "prereg")
-# Không băm đường dẫn (khác nhau giữa máy/OS); nội dung prereg đã có prereg_hash trong run_info.
-_HASH_SKIP = ("runs_root", "num_workers", "ffpp_root", "prereg")
-
-
-def _is_locked(k: str) -> bool:
-    return k in PREREG_KEYS or k.startswith("lora_")
+ARMS = ("raw", "raw_aug")
+_PATH_FIELDS = ("data_root", "ckpt_root")
+_TUPLE_FIELDS = ("lora_targets", "tap_layers")
+# Không băm đường dẫn/worker/tên run (không ảnh hưởng kết quả).
+_HASH_SKIP = ("data_root", "ckpt_root", "num_workers", "run_name")
 
 
 @dataclass(frozen=True)
 class TrainConfig:
-    ffpp_root: Path  # thư mục output của preprocessing (chứa ffpp_raw/, ffpp_aug/)
-    runs_root: Path
-    mode: Literal["raw", "raw+rep"]
-    seed: int
-    total_steps: int
-    eval_every: int
-    ckpt_every: int
-    rho: float = 0.5
-    model_name: str = "openai/clip-vit-large-patch14-336"
-    model_revision: str | None = None  # commit HF của model_name; run thật (không --pilot) bắt buộc ghim qua prereg
+    data_root: Path  # out_root của preprocessing (chứa manifest và ảnh)
+    ckpt_root: Path = Path("checkpoints/clip")
+    arm: Literal["raw", "raw_aug"] = "raw"
+    run_name: str | None = None  # None -> dùng arm
+    seed: int = 0
+    model_name: str = "openai/clip-vit-large-patch14"
+    model_revision: str | None = None
     lora_r: int = 16
     lora_alpha: int = 16
     lora_dropout: float = 0.0
@@ -56,59 +40,43 @@ class TrainConfig:
     lr: float = 2e-4
     weight_decay: float = 0.01
     warmup_frac: float = 0.05
-    grad_accum: int = 1
+    max_epochs: int = 30
+    patience: int = 5
+    p_jpeg: float = 0.5
+    jpeg_q: int = 95
     num_workers: int = 4
-    jpeg_q: tuple = (75, 95)  # JPEG lúc train cho ảnh gốc ffpp_raw; nên trùng jpeg_q của preprocessing (ffpp_aug)
-    selfblend: dict = field(default_factory=lambda: dict(DEFAULT_T))
-    prereg: Path | None = None
-
-
-def _read_yaml(path) -> dict:
-    d = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return d or {}
 
 
 def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
-    d = _read_yaml(path)
-    overrides = dict(overrides or {})
-    prereg = overrides.get("prereg", d.get("prereg"))
-    if prereg:
-        locked = sorted(k for k in overrides if _is_locked(k))
-        if locked:
-            raise ValueError(f"Khóa bị prereg khóa, không được override: {locked}")
-        pre = _read_yaml(prereg)
-        bad = sorted(k for k in pre if not _is_locked(k))
-        if bad:
-            raise ValueError(f"File prereg {prereg} chứa khóa không thuộc PREREG_KEYS/lora_*: {bad}")
-        missing = [k for k in PREREG_REQUIRED if k not in pre]
-        if missing:
-            raise ValueError(f"File prereg {prereg} thiếu khóa {missing}; prereg phải ghi đủ {list(PREREG_REQUIRED)}")
-        d.update(pre)
-        d["prereg"] = prereg
-    d.update(overrides)
+    d = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    d.update(overrides or {})
     names = {f.name for f in dataclasses.fields(TrainConfig)}
     unknown = set(d) - names
     if unknown:
         raise ValueError(f"Khóa config không hợp lệ: {sorted(unknown)}")
-    if not d.get("prereg"):
-        d["prereg"] = None  # "" / null / thiếu đều là không prereg (Path("") sẽ thành "." và lọt qua kiểm tra)
     for k in _PATH_FIELDS:
         if d.get(k) is not None:
             d[k] = Path(d[k])
-    for k in ("lora_targets", "tap_layers", "jpeg_q"):
+    for k in _TUPLE_FIELDS:
         if k in d:
             d[k] = tuple(d[k])
-    if "selfblend" in d:
-        d["selfblend"] = {**DEFAULT_T, **d["selfblend"]}
     try:
         cfg = TrainConfig(**d)
     except TypeError as e:
         raise ValueError(f"Thiếu khóa bắt buộc: {e}") from e
-    if cfg.batch_size < 2 or cfg.batch_size % 2:
-        raise ValueError(f"batch_size phải chẵn (nửa real, nửa fake mỗi batch), nhận {cfg.batch_size}")
-    if cfg.mode not in MODES:
-        raise ValueError(f"mode phải thuộc {MODES}, nhận {cfg.mode!r}")
+    if cfg.arm not in ARMS:
+        raise ValueError(f"arm phải thuộc {ARMS}, nhận {cfg.arm!r}")
+    if not 0.0 <= cfg.p_jpeg <= 1.0:
+        raise ValueError(f"p_jpeg phải nằm trong [0, 1], nhận {cfg.p_jpeg}")
+    if cfg.patience < 1:
+        raise ValueError(f"patience phải >= 1, nhận {cfg.patience}")
+    if cfg.max_epochs < 1:
+        raise ValueError(f"max_epochs phải >= 1, nhận {cfg.max_epochs}")
     return cfg
+
+
+def run_name_of(cfg: TrainConfig) -> str:
+    return cfg.run_name or cfg.arm
 
 
 def config_hash(cfg: TrainConfig) -> str:

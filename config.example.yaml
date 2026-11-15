@@ -1,26 +1,24 @@
-# Ví dụ config cho ffd.config.load_train_config. Trạng thái: chưa chạy thử.
-ffpp_root: F:/DeepFakeData/compsynth_ff   # = out_root của preprocessing (chứa ffpp_raw/, ffpp_aug/)
-runs_root: runs
-mode: raw            # raw | raw+rep
+# Ví dụ config cho ffd.config.load_train_config (v2, không prereg). Trạng thái: chưa chạy thử trên GPU.
+data_root: F:/DeepFakeData/duy_output/compsynth_ff   # = out_root của preprocessing
+ckpt_root: checkpoints/clip   # nơi lưu checkpoint/kết quả; run nằm ở ckpt_root/<run_name>
+arm: raw              # raw (ảnh raw train) | raw_aug (raw train + mọi ảnh manifest_aug)
+run_name: null        # null -> dùng tên arm
 seed: 0
-rho: 0.5
-# total_steps / eval_every / ckpt_every: GIÁ TRỊ GIỮ CHỖ, sẽ chốt trong pilot.
-total_steps: 100
-eval_every: 20
-ckpt_every: 50
-model_name: openai/clip-vit-large-patch14-336
+model_name: openai/clip-vit-large-patch14
+model_revision: null  # commit HF để ghim phiên bản; null = mới nhất
 lora_r: 16
 lora_alpha: 16
 lora_dropout: 0.0
 lora_targets: [q_proj, v_proj]
 tap_layers: []
 head: binary
+grad_checkpointing: true
 batch_size: 32
-lr: 2.0e-4
+lr: 2.0e-4            # pilot thử {1e-4, 2e-4, 5e-4}
 weight_decay: 0.01
 warmup_frac: 0.05
-grad_accum: 1
-num_workers: 4         # worker đọc ảnh cho train, val và eval (không vào hash; đổi bằng --set num_workers=8). GPU-Util dao động -> tăng
-jpeg_q: [75, 95]     # JPEG lúc train cho ảnh ffpp_raw; giữ trùng jpeg_q của preprocessing
-selfblend: {hue: 5.0, sat: 0.10, val: 0.10, brightness: 10.0, contrast: 0.10, scale: 0.05, shift: 2.0}
-prereg: null
+max_epochs: 30
+patience: 5           # early stopping: AUC frame val không tăng quá 1e-4 trong 5 epoch liên tiếp
+p_jpeg: 0.5           # xác suất nén JPEG lúc train; pilot thử {0, 1}
+jpeg_q: 95            # chất lượng JPEG
+num_workers: 4        # worker đọc ảnh (không vào hash)
