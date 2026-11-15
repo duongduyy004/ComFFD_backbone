@@ -191,3 +191,26 @@ def test_clustered_input_checks():
         delong_paired_clustered([0, 1, 1], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0, 0])
     with pytest.raises(ValueError, match="cụm"):
         delong_paired_clustered([0, 1, 0, 1], [0.1, 0.9, 0.2, 0.8], [0.3, 0.7, 0.2, 0.6], [5, 5, 5, 5])
+
+
+from ffd.stats import paired_bootstrap_diff  # noqa: E402
+
+
+def test_paired_bootstrap_identical_scores():
+    # s1 == s2 -> hiệu 0, CI [0, 0]
+    rng = np.random.default_rng(1)
+    y = np.repeat([0, 1], 30)
+    s = rng.normal(size=60) + y
+    d, lo, hi = paired_bootstrap_diff(y, s, s, n=200, seed=0)
+    assert (d, lo, hi) == (0.0, 0.0, 0.0)
+
+
+def test_paired_bootstrap_diff_sign_and_determinism():
+    rng = np.random.default_rng(2)
+    y = np.repeat([0, 1], 100)
+    s1 = rng.normal(size=200) + 0.2 * y
+    s2 = rng.normal(size=200) + 2.0 * y
+    r = paired_bootstrap_diff(y, s1, s2, n=300, seed=0)
+    assert r == paired_bootstrap_diff(y, s1, s2, n=300, seed=0)
+    assert r[0] == pytest.approx(auc(y, s2) - auc(y, s1)) and r[1] <= r[0] <= r[2] and r[1] > 0
+    assert all(isinstance(v, float) for v in r)

@@ -145,3 +145,25 @@ def delong_paired_clustered(y, s1, s2, clusters) -> tuple[float, float, float]:
         return d, float(np.copysign(np.inf, d)), 0.0
     z = d / np.sqrt(var)
     return d, float(z), float(2 * norm.sf(abs(z)))
+
+
+def paired_bootstrap_diff(y, s1, s2, n=2000, seed=0) -> tuple[float, float, float]:
+    """(AUC(s2) - AUC(s1), lo, hi): resample frame có hoàn lại (cùng chỉ số cho cả hai bộ điểm), CI 95% percentile.
+    Lần rút chỉ có một lớp bị bỏ và rút lại cho đủ n lần hợp lệ."""
+    y, s1, s2 = np.asarray(y), np.asarray(s1, float), np.asarray(s2, float)
+    if not (len(y) == len(s1) == len(s2)):
+        raise ValueError("y, s1, s2 phải cùng độ dài")
+    rng = np.random.default_rng(seed)
+    vals = []
+    attempts = 0
+    while len(vals) < n:
+        attempts += 1
+        if attempts > 100 * n + 1000:
+            raise ValueError("không rút được resample có đủ hai lớp")
+        idx = rng.integers(0, len(y), len(y))
+        yy = y[idx]
+        if yy.min() == yy.max():
+            continue
+        vals.append(roc_auc_score(yy, s2[idx]) - roc_auc_score(yy, s1[idx]))
+    lo, hi = np.quantile(vals, [0.025, 0.975])
+    return float(auc(y, s2) - auc(y, s1)), float(lo), float(hi)
