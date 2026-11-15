@@ -15,9 +15,7 @@ from ffd.model import Detector  # noqa: E402
 
 
 def cfg(**kw):
-    base = dict(ffpp_root="x", runs_root="runs", mode="raw", seed=0, total_steps=1,
-                eval_every=1, ckpt_every=1, lora_r=4, lora_alpha=8, head="binary",
-                grad_checkpointing=False)
+    base = dict(data_root="x", lora_r=4, lora_alpha=8, head="binary", grad_checkpointing=False)
     base.update(kw)
     return TrainConfig(**base)
 
@@ -28,15 +26,15 @@ def snapshot_base(d):
 
 def test_tap_layer_indices(tiny):
     m = ClipLoraTrunk(**tiny, tap_layers=(8, 16, 24))
-    x = torch.randn(2, 3, 336, 336)
+    x = torch.randn(2, 3, 224, 224)
     out = m(x)
     hs = m.base(x, output_hidden_states=True).hidden_states
-    assert torch.allclose(out["patch"][16], hs[16][:, 1:]) and out["patch"][8].shape[1] == 576
+    assert torch.allclose(out["patch"][16], hs[16][:, 1:]) and out["patch"][8].shape[1] == 256
     assert out["cls"].shape == (2, 32) and set(out["patch"]) == {8, 16, 24}
 
 
 def test_no_tap_layers(tiny):
-    out = ClipLoraTrunk(**tiny, tap_layers=())(torch.randn(1, 3, 336, 336))
+    out = ClipLoraTrunk(**tiny, tap_layers=())(torch.randn(1, 3, 224, 224))
     assert out["patch"] == {} and out["cls"].shape == (1, 32)
 
 
@@ -51,7 +49,7 @@ def test_base_frozen_after_step(tiny):
     d = Detector(cfg(), vision_config=tiny["vision_config"])
     before = snapshot_base(d)
     opt = torch.optim.SGD([p for p in d.parameters() if p.requires_grad], lr=0.1)
-    out = d(torch.randn(2, 3, 336, 336))
+    out = d(torch.randn(2, 3, 224, 224))
     loss, _ = d.head.loss(out, {"L0": torch.tensor([0.0, 1.0])})
     loss.backward()
     opt.step()
@@ -73,7 +71,7 @@ def test_trainable_state_roundtrip(tiny):
                 p.add_(torch.randn_like(p) * 0.1)
     sd = d1.trainable_state_dict()
     assert all("lora_" in k or k.startswith("head.") for k in sd)
-    x = torch.randn(1, 3, 336, 336)
+    x = torch.randn(1, 3, 224, 224)
     assert not torch.allclose(d1(x)["logit"], d2(x)["logit"])
     d2.load_trainable(sd)
     assert torch.allclose(d1(x)["logit"], d2(x)["logit"])
@@ -83,7 +81,7 @@ def test_grad_checkpointing_runs(tiny):
     kw = dict(tiny, grad_checkpointing=True)
     m = ClipLoraTrunk(**kw, tap_layers=(24,))
     m.train()
-    out = m(torch.randn(1, 3, 336, 336))
+    out = m(torch.randn(1, 3, 224, 224))
     out["cls"].sum().backward()
     assert any(p.grad is not None for n, p in m.named_parameters() if "lora_" in n)
 
@@ -109,18 +107,17 @@ def test_head_registry_and_binary_loss():
 
 @pytest.mark.gpu
 def test_real_vit_l_loads():
-    m = ClipLoraTrunk("openai/clip-vit-large-patch14-336", 16, 16, 0.0, ("q_proj", "v_proj"), (8, 16, 24), False)
-    out = m(torch.randn(1, 3, 336, 336))
-    assert out["cls"].shape == (1, 1024) and out["patch"][8].shape == (1, 576, 1024)
+    m = ClipLoraTrunk("openai/clip-vit-large-patch14", 16, 16, 0.0, ("q_proj", "v_proj"), (8, 16, 24), False)
+    out = m(torch.randn(1, 3, 224, 224))
+    assert out["cls"].shape == (1, 1024) and out["patch"][8].shape == (1, 256, 1024)
 
 
 def test_detector_checkpointing_follows_cfg(tiny):
-    assert TrainConfig(ffpp_root="x", runs_root="r", mode="raw", seed=0, total_steps=1,
-                       eval_every=1, ckpt_every=1).grad_checkpointing is True
+    assert TrainConfig(data_root="x").grad_checkpointing is True
     d = Detector(cfg(grad_checkpointing=True), vision_config=tiny["vision_config"])
     assert d.trunk.base.base_model.model.encoder.gradient_checkpointing is True
     d.train()
-    d(torch.randn(1, 3, 336, 336))["logit"].sum().backward()
+    d(torch.randn(1, 3, 224, 224))["logit"].sum().backward()
     grads = [p.grad for n, p in d.named_parameters() if "lora_" in n and p.grad is not None]
     assert grads and any(g.abs().sum() > 0 for g in grads)
     d2 = Detector(cfg(), vision_config=tiny["vision_config"])
@@ -137,7 +134,7 @@ def test_binary_head_fp32_under_autocast(tiny):
     assert out["logit"].dtype == torch.float32
     d = Detector(cfg(), vision_config=tiny["vision_config"])
     with torch.autocast("cpu", dtype=torch.bfloat16):
-        assert d(torch.randn(2, 3, 336, 336))["logit"].dtype == torch.float32
+        assert d(torch.randn(2, 3, 224, 224))["logit"].dtype == torch.float32
 
 
 def test_from_pretrained_gets_revision_and_records_commit(tiny, monkeypatch):
@@ -155,8 +152,8 @@ def test_from_pretrained_gets_revision_and_records_commit(tiny, monkeypatch):
     monkeypatch.setattr(CLIPVisionModel, "from_pretrained", staticmethod(fake))
     monkeypatch.setattr(ffd.backbone, "resolve_commit", lambda n, r: f"sha-of-{n}@{r}")
     d = Detector(cfg(model_revision="c0ffee"))
-    assert seen == {"name": "openai/clip-vit-large-patch14-336", "revision": "c0ffee"}
-    assert d.trunk.commit == "sha-of-openai/clip-vit-large-patch14-336@c0ffee"
+    assert seen == {"name": "openai/clip-vit-large-patch14", "revision": "c0ffee"}
+    assert d.trunk.commit == "sha-of-openai/clip-vit-large-patch14@c0ffee"
     assert Detector(cfg(), vision_config=tiny["vision_config"]).trunk.commit == "local"
 
 

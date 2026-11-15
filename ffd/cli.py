@@ -1,16 +1,13 @@
-"""CLI: python -m ffd.cli {train,eval,report,smoke}.
+"""CLI: python -m ffd.cli {pilot,main,train,eval,compare,smoke}.
 
-Import nặng (torch, model) để trễ trong từng lệnh, nên kiểm tra tham số lỗi thất bại nhanh.
-`train` KHÔNG truyền allow_cpu (train thật cần CUDA); `--set k=v` đi qua load_train_config nên khóa prereg bị từ chối.
-Trạng thái: chưa chạy thử.
+Thứ tự dùng: smoke -> pilot -> main. Import nặng (torch, model) để trễ trong từng lệnh, nên lỗi tham số thất bại nhanh.
+CLI không truyền allow_cpu (train thật cần CUDA). `--set k=v` đi qua load_train_config (khóa lạ bị từ chối).
+Trạng thái: chưa chạy thử trên GPU.
 """
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
-
-EVAL_DATASETS = ("ffpp_test",)
 
 
 def _scalar(v: str, yaml):
@@ -23,7 +20,7 @@ def _scalar(v: str, yaml):
 
 
 def parse_sets(items) -> dict:
-    """['lr=1e-4', 'mode=raw'] -> {'lr': 1e-4, 'mode': 'raw'}; giá trị parse bằng YAML (số, bool, chuỗi, list)."""
+    """['lr=1e-4', 'arm=raw'] -> {'lr': 1e-4, 'arm': 'raw'}; giá trị parse bằng YAML (số, bool, chuỗi, list)."""
     import yaml
 
     out = {}
@@ -35,67 +32,73 @@ def parse_sets(items) -> dict:
     return out
 
 
-def _load_cfg(config, sets, pilot: bool = False):
-    import dataclasses
-
+def _load_cfg(config, sets):
     import yaml
 
     from .config import load_train_config
 
     try:
-        cfg = load_train_config(config, parse_sets(sets))
-    except (ValueError, yaml.YAMLError) as e:
+        return load_train_config(config, parse_sets(sets))
+    except (ValueError, yaml.YAMLError, OSError) as e:
         raise SystemExit(f"Lỗi config: {e}") from e
-    if pilot:  # thư mục anh em, tách khỏi runs_root thật để không đè run seed 0 sau này
-        cfg = dataclasses.replace(cfg, runs_root=Path(str(cfg.runs_root).rstrip("/\\") + "_pilot"))
-    return cfg
+
+
+def _cmd_pilot(a):
+    from . import experiment
+
+    p = experiment.run_pilot(_load_cfg(a.config, a.set))
+    print(p)
+    print(p.read_text(encoding="utf-8"))
+
+
+def _cmd_main(a):
+    from . import experiment
+
+    cfg = _load_cfg(a.config, a.set)
+    try:
+        print(experiment.run_main(cfg))
+    except FileNotFoundError as e:
+        raise SystemExit(f"Lỗi main: {e}") from e
 
 
 def _cmd_train(a):
     from .train import train
 
-    cfg = _load_cfg(a.config, a.set, pilot=a.pilot)
-    if not a.pilot and not cfg.prereg:
-        raise SystemExit("Từ chối train: config không có prereg (thiếu, null hoặc rỗng). Run thật cần "
-                         "--set prereg=configs/prereg_aug.yaml; pilot thì thêm --pilot.")
-    if not a.pilot and cfg.model_revision is None:
-        raise SystemExit("Từ chối train: model_revision chưa ghim (None). Đặt `model_revision: <commit>` trong prereg; "
-                         "`ffd.cli smoke` in ra commit đã resolve của model_name.")
-    d = train(cfg, resume=a.resume, force=a.force)  # không allow_cpu
-    print(d)
+    cfg = _load_cfg(a.config, a.set)
+    print(train(cfg, resume=a.resume, force=a.force))  # không allow_cpu
 
 
 def _cmd_eval(a):
     from .evaluate import evaluate_run
 
-    ds = [x for x in a.datasets.split(",") if x]
-    bad = [x for x in ds if x not in EVAL_DATASETS]
-    if bad or not ds:
-        raise SystemExit(f"--datasets không hợp lệ {bad}; chỉ chấp nhận {list(EVAL_DATASETS)}")
     try:
-        print(evaluate_run(a.run, ds, ffpp_root=a.ffpp_root, prereg=a.prereg))
+        print(evaluate_run(a.run, data_root=a.data_root))
     except ValueError as e:
         raise SystemExit(f"Lỗi eval: {e}") from e
 
 
-def _cmd_report(a):
-    from .report import build_report
+def _cmd_compare(a):
+    from .compare import compare_runs
 
-    print(build_report(a.runs_root))
+    try:
+        print(compare_runs(a.ckpt_root))
+    except (ValueError, FileNotFoundError) as e:
+        raise SystemExit(f"Lỗi compare: {e}") from e
 
 
 def _cmd_smoke(a):
+    import json
+
     from .smoke import smoke
 
     cfg = _load_cfg(a.config, a.set)
-    import json
-
     try:
         p = smoke(cfg, a.steps)
     except ValueError as e:
         raise SystemExit(f"Lỗi smoke: {e}") from e
     print(p)
-    print(f"model_commit (ghi vào prereg là model_revision): {json.loads(p.read_text(encoding='utf-8'))['model_commit']}")
+    print(p.read_text(encoding="utf-8"))
+    print(f"model_commit (ghim vào config là model_revision): {json.loads(p.read_text(encoding='utf-8'))['model_commit']}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,37 +107,36 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--no-progress", action="store_true", help="tắt thanh tiến trình (stderr)")
 
-    t = sp.add_parser("train", parents=[common])
-    t.add_argument("--config", required=True)
-    t.add_argument("--set", action="append", default=[], metavar="k=v")
-    t.add_argument("--resume", action="store_true")
-    t.add_argument("--force", action="store_true")
-    t.add_argument("--pilot", action="store_true",
-                   help="ghi vào <runs_root>_pilot, cho phép thiếu prereg; kết quả pilot không vào report")
-    t.set_defaults(fn=_cmd_train)
+    def with_config(name, fn, help_):
+        s = sp.add_parser(name, parents=[common], help=help_)
+        s.add_argument("--config", required=True)
+        s.add_argument("--set", action="append", default=[], metavar="k=v")
+        s.set_defaults(fn=fn)
+        return s
 
-    e = sp.add_parser("eval", parents=[common])
+    with_config("pilot", _cmd_pilot, "5 run arm raw, chỉ val -> <ckpt_root>/pilot/selected.json")
+    with_config("main", _cmd_main, "train + eval raw, raw_aug với lr/p_jpeg đã chọn -> compare.json")
+    t = with_config("train", _cmd_train, "train một run (<ckpt_root>/<run_name>)")
+    t.add_argument("--resume", action="store_true", help="chạy tiếp từ last.pt")
+    t.add_argument("--force", action="store_true", help="xóa kết quả cũ của run rồi chạy lại")
+    s = with_config("smoke", _cmd_smoke, "vài bước train ViT-L thật trên GPU: giây/bước, VRAM đỉnh, ảnh mẫu")
+    s.add_argument("--steps", type=int, default=50)
+
+    e = sp.add_parser("eval", parents=[common], help="chấm best.pt của một run -> result.json")
     e.add_argument("--run", required=True)
-    e.add_argument("--datasets", required=True, help=",".join(EVAL_DATASETS))
-    e.add_argument("--ffpp-root", default=None,
-                   help="thư mục output preprocessing trên máy eval (khác máy train); manifest phải trùng hash lúc train")
-    e.add_argument("--prereg", default=None, help="đường dẫn prereg trên máy eval; nội dung phải trùng lúc train")
+    e.add_argument("--data-root", default=None, help="data_root trên máy eval (khác máy train); dữ liệu phải trùng hash")
     e.set_defaults(fn=_cmd_eval)
 
-    r = sp.add_parser("report", parents=[common])
-    r.add_argument("--runs-root", required=True)
-    r.set_defaults(fn=_cmd_report)
-
-    s = sp.add_parser("smoke", parents=[common])
-    s.add_argument("--config", required=True)
-    s.add_argument("--steps", type=int, default=50)
-    s.add_argument("--set", action="append", default=[], metavar="k=v")
-    s.set_defaults(fn=_cmd_smoke)
+    c = sp.add_parser("compare", parents=[common], help="so sánh <ckpt_root>/raw và raw_aug -> compare.json")
+    c.add_argument("--ckpt-root", required=True)
+    c.set_defaults(fn=_cmd_compare)
     return p
 
 
 def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
+    if a.cmd == "train" and a.resume and a.force:
+        raise SystemExit("Không dùng --resume và --force cùng lúc (resume giữ tiến độ, force xóa hết).")
     from . import progress
 
     progress.ENABLED = not a.no_progress
