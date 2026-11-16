@@ -36,9 +36,9 @@ class TrainConfig:
     lora_targets: tuple = ("q_proj", "v_proj")
     tap_layers: tuple = ()
     head: str = "binary"
-    grad_checkpointing: bool = True
+    grad_checkpointing: bool = False  # tắt nhanh hơn ~21%, VRAM ~8.8 GB (smoke 16/11); ngoài hash
     batch_size: int = 32
-    lr: float = 2e-4
+    lr: float = 1e-4  # theo run thử lr1e-4_p0.5 (16/11); khớp config.example.yaml
     weight_decay: float = 0.01
     warmup_frac: float = 0.05
     max_epochs: int = 30

@@ -2,13 +2,14 @@
 
 Không còn pilot (bỏ 16/11, quyết định người dùng): `lr`, `p_jpeg` và mọi trường khác lấy thẳng từ config
 (config.example.yaml: lr 1e-4, p_jpeg 0.5 theo run thử 16/11). Thiếu `<data_root>/celebdf/manifest.parquet`
--> FileNotFoundError (không chạy main khi thiếu Celeb-DF). Train + eval (val, ffpp_test, celebdf) arm raw và raw_aug
+-> FileNotFoundError (không chạy main khi thiếu Celeb-DF). Trước khi train, in ra stdout một khối config hiệu lực
+(`EFFECTIVE_KEYS`) để phát hiện config.yaml chép từ mẫu cũ (vd lr 2e-4, grad_checkpointing true). Train + eval (val, ffpp_test, celebdf) arm raw và raw_aug
 (`run_name = arm`), rồi compare_runs, rồi in bảng tổng hợp và ghi `<ckpt_root>/summary.md`. Seed lấy từ config
 (mặc định 0; 1 run/arm, exploratory).
 
 Quy tắc chạy tiếp một run (`ensure_run`): có result.json đủ mọi dataset yêu cầu -> xong, bỏ qua; result.json thiếu
-dataset yêu cầu, hoặc celebdf là {"skipped": ...} mà nay đã có dữ liệu -> chỉ eval lại (không train); có done.flag -> chỉ eval; có last.pt ->
-train(resume=True); không có gì -> train mới (còn file dở từ lần chết trước epoch 1 thì force, vì không có tiến độ
+dataset yêu cầu, hoặc celebdf là {"skipped": ...} mà nay đã có dữ liệu -> chỉ eval lại (không train);
+có done.flag -> chỉ eval; có last.pt -> train(resume=True); không có gì -> train mới (còn file dở từ lần chết trước epoch 1 thì force, vì không có tiến độ
 để giữ). Không bao giờ truyền resume và force cùng lúc. run_info.json có config_hash khác config hiện tại -> ValueError.
 Trạng thái: chưa chạy thử trên GPU.
 """
@@ -27,6 +28,15 @@ from .rundir import run_dir
 from .train import train
 
 MAIN_DATASETS = ("val", "ffpp_test", "celebdf")
+# Khóa in ra đầu `main` (config hiệu lực sau --set).
+EFFECTIVE_KEYS = ("data_root", "ckpt_root", "lr", "p_jpeg", "batch_size", "max_epochs", "patience", "seed",
+                  "grad_checkpointing", "model_name", "model_revision", "num_workers")
+
+
+def effective_settings(cfg: TrainConfig) -> str:
+    """Khối chữ gọn: một dòng `khóa: giá trị` cho mỗi khóa trong EFFECTIVE_KEYS."""
+    w = max(map(len, EFFECTIVE_KEYS))
+    return "\n".join(f"  {k.ljust(w)} : {getattr(cfg, k)}" for k in EFFECTIVE_KEYS)
 
 
 def _missing(res: dict, datasets, data_root) -> list[str]:
@@ -73,6 +83,7 @@ def run_main(base_cfg: TrainConfig, *, vision_config=None, allow_cpu: bool = Fal
     celeb = celebdf_dir(base_cfg.data_root) / "manifest.parquet"
     if not celeb.exists():
         raise FileNotFoundError(f"Thiếu {celeb}: main bắt buộc có Celeb-DF; chạy tiền xử lý Celeb-DF trước `main`")
+    print(f"Config hiệu lực của main (arm raw, raw_aug):\n{effective_settings(base_cfg)}", flush=True)
     results = {}
     for arm in ARMS:
         cfg = dataclasses.replace(base_cfg, arm=arm, run_name=arm)

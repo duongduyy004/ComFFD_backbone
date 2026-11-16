@@ -62,7 +62,7 @@ def test_resume_keeps_files_and_checks_hash(tmp_path):
     assert prepare_run_dir(c, resume=True, force=False) == d
     assert (d / "last.pt").exists()
     with pytest.raises(ValueError, match="config_hash"):
-        prepare_run_dir(cfg(tmp_path, lr=1e-4), resume=True, force=False)
+        prepare_run_dir(cfg(tmp_path, lr=2e-4), resume=True, force=False)
 
 
 def test_write_run_info(tmp_path, data_root):

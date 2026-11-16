@@ -109,6 +109,28 @@ def test_main_uses_config_lr_pjpeg(monkeypatch, tmp_path, capsys):
     assert "| celebdf | skipped: lý do MINH HỌA |" in md
     out = capsys.readouterr().out
     assert "AUC raw_aug" in out and "p DeLong" in out and "RECALL" in out
+    head = out[:out.index("Tổng hợp main")]  # khối config in trước bảng tổng hợp
+    for k in X.EFFECTIVE_KEYS:
+        assert k in head, k
+    assert "0.0003" in head and "0.2" in head
+
+
+def test_main_prints_settings_before_training(monkeypatch, tmp_path, capsys):
+    """Khối config hiệu lực in ra stdout trước lần train đầu tiên."""
+    seen = []
+    fake_runs(monkeypatch, {})
+    orig = X.train
+
+    def spy(cfg, **kw):
+        seen.append(capsys.readouterr().out)
+        return orig(cfg, **kw)
+
+    monkeypatch.setattr(X, "train", spy)
+    monkeypatch.setattr(X, "compare_runs", _fake_compare)
+    _celeb(tmp_path)
+    run_main(_cfg(tmp_path, lr=2e-4, grad_checkpointing=True))
+    assert "Config hiệu lực" in seen[0] and "lr " in seen[0] and "0.0002" in seen[0]
+    assert "grad_checkpointing" in seen[0] and "True" in seen[0] and "model_revision" in seen[0]
 
 
 def test_main_requires_celebdf(monkeypatch, tmp_path):

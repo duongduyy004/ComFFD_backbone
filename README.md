@@ -38,7 +38,21 @@ Giá trị trong `config.example.yaml`:
   `config_hash`** (không đổi phép toán, chỉ đổi bộ nhớ/tốc độ), cùng `data_root`, `ckpt_root`, `num_workers`,
   `run_name`.
 
-Mọi khóa khác vào `config_hash`: đổi giữa các lần chạy main thì run cũ báo lỗi (xóa thư mục run hoặc đổi `ckpt_root`).
+Mặc định trong `TrainConfig` cũng là `lr` 1e-4, `grad_checkpointing` false. Mọi khóa khác vào `config_hash`: đổi
+giữa các lần chạy main thì run cũ báo lỗi (xóa thư mục run hoặc đổi `ckpt_root`). `main` in khối config hiệu lực
+(`data_root`, `ckpt_root`, `lr`, `p_jpeg`, `batch_size`, `max_epochs`, `patience`, `seed`, `grad_checkpointing`,
+`model_name`, `model_revision`, `num_workers`) ra stdout trước khi train: **đọc lại khối này trước khi để chạy**.
+
+**Nếu `config.yaml` chép từ mẫu cũ** (trước 16/11), sửa tay vì khóa ghi rõ trong file thắng mặc định:
+
+- `lr: 1.0e-4` (mẫu cũ ghi `2.0e-4`);
+- `grad_checkpointing: false` (mẫu cũ ghi `true`);
+- `model_revision`: ghim commit HF (`model_commit` in ra từ `smoke`);
+- xóa mọi khóa hay chú thích liên quan pilot (khóa lạ -> `load_train_config` báo lỗi).
+
+**Run cũ không dùng tiếp được:** commit 16/11 bỏ `grad_checkpointing` khỏi `config_hash`, nên mọi thư mục run tạo
+trước đó (vd `checkpoints/clip/pilot/`, `raw/`/`raw_aug/` dở dang) có `config_hash` khác -> `main`/`eval` báo lỗi.
+Xóa các thư mục đó hoặc đặt `ckpt_root` mới.
 
 ### Test
 
@@ -67,8 +81,12 @@ PowerShell, thư mục `detector/`, đã activate `.venv`.
    ```
 
 Mỗi epoch in một dòng (stderr), vd
-`[raw] epoch 3: loss 0.1234 | val ACC 0.9500 AUC 0.9900 PREC 0.9600 REC 0.9700 F1 0.9650 BCE 0.1500 | best e3, bad 0/5`
-(số MINH HỌA). Sau eval mỗi run in bảng `dataset, n_frames, ACC, AUC, PREC, RECALL, F1, AUC_video` ra stdout.
+(số MINH HỌA):
+
+```
+[raw] epoch 3: loss 0.1234 | val ACC 0.9500 AUC 0.9900 PREC 0.9600 REC 0.9700 F1 0.9650 BCE 0.1500 | best e3, bad 0/5
+```
+ Sau eval mỗi run in bảng `dataset, n_frames, ACC, AUC, PREC, RECALL, F1, AUC_video` ra stdout.
 
 `main` chạy lại được sau khi bị ngắt: run có `result.json` đủ dataset được bỏ qua (thiếu dataset, hoặc
 `celebdf` bị `skipped` mà nay đã có dữ liệu -> chỉ eval lại); có `done.flag` thì chỉ eval; có `last.pt` thì train
@@ -102,8 +120,9 @@ checkpoints/clip/
 Mỗi thư mục run: `run_info.json` (config đầy đủ, `config_hash`, `model_commit`, phiên bản thư viện, sha256 dữ liệu),
 `train_log.csv` (mỗi epoch một dòng, cột: `epoch, step, train_loss, lr, val_auc_frame, val_bce, val_acc,
 val_precision, val_recall, val_f1, frac_real, frac_rep, frac_seam, frac_jpeg, seconds`; chỉ số val ngưỡng logit >= 0,
-chỉ để theo dõi; log cũ 11 cột khi resume được ghi lại với header mới, ô thiếu để trống), `last.pt` (để resume), `best.pt` (epoch tốt nhất theo AUC frame val, hòa trong
-1e-4 thì BCE val thấp hơn), `done.flag` (`epochs_run`, `best_epoch`, `stopped_early` = dừng vì patience trước `max_epochs`, `total_steps`),
+chỉ để theo dõi; log cũ 11 cột khi resume được ghi lại với header mới, ô thiếu để trống), `last.pt` (để resume),
+`best.pt` (epoch tốt nhất theo AUC frame val, hòa trong 1e-4 thì BCE val thấp hơn), `done.flag` (`epochs_run`,
+`best_epoch`, `stopped_early` = dừng vì patience trước `max_epochs`, `total_steps`),
 `scores_<dataset>.parquet` (logit từng frame), `result.json`, `result.md` (cùng bảng in ra lúc eval dạng Markdown:
 tiêu đề run, `best_epoch`/`epochs_run`, bảng ACC/AUC/PREC/RECALL/F1/AUC_video từng dataset; `ffpp_test` thêm bảng
 AUC theo method).
@@ -134,5 +153,5 @@ AUC theo method).
 lạc quan."* Chạy 1 run/arm (seed 0) và không pre-register là **quyết định có chủ ý** của chủ đề tài ngày 15/11/2026
 (ngoại lệ với nguyên tắc 4, 5 của project). Kết quả chỉ dùng để định hướng, không dùng làm claim.
 
-Chống leakage: `lr` chọn từ run thử trên FF++ val, epoch tốt nhất chỉ chọn trên FF++ val; FF++ test và Celeb-DF chỉ được đọc khi eval
-`best.pt`. **Không chỉnh gì sau khi xem test.**
+Chống leakage: `lr` chọn từ run thử trên FF++ val, epoch tốt nhất chỉ chọn trên FF++ val; FF++ test và Celeb-DF
+chỉ được đọc khi eval `best.pt`. **Không chỉnh gì sau khi xem test.**

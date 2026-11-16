@@ -48,7 +48,8 @@ from .rundir import prepare_run_dir, write_run_info
 from .stats import auc
 
 LOG_COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce",
-            "val_acc", "val_precision", "val_recall", "val_f1", "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
+            "val_acc", "val_precision", "val_recall", "val_f1",
+            "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
 TOL = 1e-4
 
 
@@ -305,7 +306,8 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         _atomic_save({"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
                       "scheduler": sched.state_dict(), "rng": _rng_state(), "epoch": epoch, "step": step,
                       "best": best, "best_state": best_state, "bad_epochs": bad}, d / "last.pt")
-        print(f"[{name}] epoch {epoch}: loss {loss_sum / n:.4f} | val ACC {m['acc']:.4f} AUC {m['auc_frame']:.4f} "
+        print(f"[{name}] epoch {epoch}: loss {loss_sum / n:.4f} | "
+              f"val ACC {m['acc']:.4f} AUC {m['auc_frame']:.4f} "
               f"PREC {m['precision']:.4f} REC {m['recall']:.4f} F1 {m['f1']:.4f} BCE {m['bce']:.4f} | "
               f"best e{best['epoch']}, bad {bad}/{cfg.patience}", file=sys.stderr, flush=True)
 

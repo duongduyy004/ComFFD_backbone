@@ -113,7 +113,7 @@ def test_real_vit_l_loads():
 
 
 def test_detector_checkpointing_follows_cfg(tiny):
-    assert TrainConfig(data_root="x").grad_checkpointing is True
+    assert TrainConfig(data_root="x").grad_checkpointing is False  # mặc định tắt từ 16/11
     d = Detector(cfg(grad_checkpointing=True), vision_config=tiny["vision_config"])
     assert d.trunk.base.base_model.model.encoder.gradient_checkpointing is True
     d.train()

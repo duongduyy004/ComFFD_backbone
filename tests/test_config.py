@@ -20,6 +20,7 @@ def test_defaults_v2(tmp_path):
     assert isinstance(c.data_root, Path) and isinstance(c.ckpt_root, Path)
     assert c.ckpt_root == Path("checkpoints/clip") and c.lora_targets == ("q_proj", "v_proj")
     assert c.tap_layers == () and c.batch_size == 32 and c.seed == 0
+    assert c.lr == 1e-4 and c.grad_checkpointing is False  # mặc định khớp config.example.yaml (16/11)
 
 
 def test_types_and_run_name(tmp_path):
@@ -49,7 +50,7 @@ def test_validation(tmp_path):
 def test_hash_ignores_paths_and_workers(tmp_path):
     a = load_train_config(wr(tmp_path))
     b = load_train_config(wr(tmp_path), {"data_root": "E:/y", "ckpt_root": "z", "num_workers": 0, "run_name": "n"})
-    c = load_train_config(wr(tmp_path), {"lr": 1e-4})
+    c = load_train_config(wr(tmp_path), {"lr": 2e-4})  # khác mặc định 1e-4
     assert config_hash(a) == config_hash(b) != config_hash(c) and len(config_hash(a)) == 12
 
 
