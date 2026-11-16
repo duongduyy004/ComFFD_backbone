@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 ffd.egg-info/
 checkpoints/
+config.yaml
