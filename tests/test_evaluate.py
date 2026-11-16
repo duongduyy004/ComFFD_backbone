@@ -51,16 +51,28 @@ def test_result_json_schema(trained, data_root):
     assert r["config"]["manifest_sha256"]["raw"] and r["config"]["params_json_sha256"]
     from ffd.data.ffpp import data_hashes
     assert r["config"]["manifest_sha256"]["celebdf"] == data_hashes(data_root)["manifest_sha256"]["celebdf"]
+    md = (trained[0] / "result.md").read_text(encoding="utf-8")
+    assert "| dataset | n_frames | ACC | AUC | PREC | RECALL | F1 | AUC_video |" in md
+    assert "best_epoch" in md and "AUC theo method" in md
     for ds in ("val", "ffpp_test", "celebdf"):
+        v = r[ds]
+        row = next(x for x in md.splitlines() if x.startswith(f"| {ds} |"))
+        assert row == (f"| {ds} | {v['n_frames']} | {v['acc']:.4f} | {v['auc']:.4f} | {v['precision']:.4f} | "
+                       f"{v['recall']:.4f} | {v['f1']:.4f} | {v['auc_video']:.4f} |")
         s = pd.read_parquet(trained[0] / f"scores_{ds}.parquet")
         assert list(s.columns) == ["video_id", "frame_idx", "label", "method", "logit"]
         assert len(s) == r[ds]["n_frames"]
 
 
-def test_eval_without_celebdf(trained, data_root, tmp_path):
+def test_eval_without_celebdf(trained, data_root, tmp_path, capsys):
     root = tmp_path / "dr"
     shutil.copytree(data_root, root, ignore=shutil.ignore_patterns("celebdf"))
     r = json.loads(_ev(trained, data_root=root).read_text(encoding="utf-8"))
+    out = capsys.readouterr().out
+    head = next(x for x in out.splitlines() if x.startswith("dataset"))
+    assert head.split() == ["dataset", "n_frames", "ACC", "AUC", "PREC", "RECALL", "F1", "AUC_video"]
+    assert any(x.startswith("celebdf") and "skipped: " in x for x in out.splitlines())
+    assert any(x.startswith("ffpp_test") and len(x.split()) == 8 for x in out.splitlines())
     assert list(r["celebdf"]) == ["skipped"] and "celebdf/manifest.parquet" in r["celebdf"]["skipped"]
     assert r["config"]["manifest_sha256"].get("celebdf") is None  # không chấm -> không ghi hash
     assert "auc" in r["ffpp_test"]

@@ -53,6 +53,13 @@ def test_hash_ignores_paths_and_workers(tmp_path):
     assert config_hash(a) == config_hash(b) != config_hash(c) and len(config_hash(a)) == 12
 
 
+def test_hash_ignores_grad_checkpointing(tmp_path):
+    """grad_checkpointing chỉ đổi bộ nhớ/tốc độ, không đổi phép toán -> cùng config_hash."""
+    a = load_train_config(wr(tmp_path), {"grad_checkpointing": True})
+    b = load_train_config(wr(tmp_path), {"grad_checkpointing": False})
+    assert config_hash(a) == config_hash(b)
+
+
 def test_file_hash(tmp_path):
     p = tmp_path / "f"; p.write_bytes(b"abc")
     assert len(file_hash(p)) == 12 and file_hash(p) == file_hash(p)
@@ -62,3 +69,5 @@ def test_example_yaml_valid():
     p = Path(__file__).resolve().parents[1] / "config.example.yaml"
     c = load_train_config(p)
     assert c.arm == "raw" and c.data_root == Path("F:/DeepFakeData/duy_output/compsynth_ff")
+    assert (c.lr, c.p_jpeg, c.grad_checkpointing) == (1e-4, 0.5, False)
+    assert "pilot" not in p.read_text(encoding="utf-8")

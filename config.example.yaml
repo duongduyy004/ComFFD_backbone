@@ -12,13 +12,13 @@ lora_dropout: 0.0
 lora_targets: [q_proj, v_proj]
 tap_layers: []
 head: binary
-grad_checkpointing: true
+grad_checkpointing: false   # tắt: nhanh hơn ~21%, VRAM ~8.8 GB (smoke 16/11); không vào hash
 batch_size: 32
-lr: 2.0e-4            # pilot thử {1e-4, 2e-4, 5e-4}
+lr: 1.0e-4            # theo run thử lr1e-4_p0.5: AUC frame val 0.9954 sau 3 epoch (16/11)
 weight_decay: 0.01
 warmup_frac: 0.05
 max_epochs: 30
 patience: 5           # early stopping: AUC frame val không tăng quá 1e-4 trong 5 epoch liên tiếp
-p_jpeg: 0.5           # xác suất nén JPEG lúc train; pilot thử {0, 1}
+p_jpeg: 0.5           # xác suất nén JPEG lúc train
 jpeg_q: 95            # chất lượng JPEG
 num_workers: 4        # worker đọc ảnh (không vào hash)

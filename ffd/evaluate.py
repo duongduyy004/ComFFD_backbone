@@ -1,4 +1,5 @@
-"""Chấm điểm best.pt của một run trên FF++ val, FF++ test, Celeb-DF; ghi `scores_{dataset}.parquet` và `result.json`.
+"""Chấm điểm best.pt của một run trên FF++ val, FF++ test, Celeb-DF; ghi `scores_{dataset}.parquet`, `result.json`
+và `result.md` (bảng ACC/AUC/PREC/RECALL/F1 từng dataset), in bảng cột cố định ra stdout.
 
 Quy ước:
 - Cần `done.flag`, `best.pt`, `run_info.json`; Detector dựng lại từ `run_info["config"]`, commit trunk phải bằng
@@ -9,6 +10,7 @@ Quy ước:
 - scores_{dataset}.parquet: video_id, frame_idx, label, method, logit (dataset ∈ val, ffpp_test, celebdf).
 - Dataset không nằm trong `datasets` -> không có khóa trong result.json; celebdf thiếu dữ liệu ->
   {"skipped": "không có <data_root>/celebdf/manifest.parquet"}.
+- result.md ghi nguyên tử TRƯỚC result.json (có result.json thì đã có result.md).
 Trạng thái: chưa chạy thử trên GPU.
 """
 from __future__ import annotations
@@ -19,8 +21,8 @@ from pathlib import Path
 import pandas as pd
 import torch
 
-from . import metrics
-from .config import TrainConfig, config_hash
+from . import metrics, tables
+from .config import TrainConfig, config_hash, run_name_of
 from .data import ffpp as D
 from .guards import allow_read
 from .io_utils import write_json_atomic, write_parquet_atomic
@@ -125,6 +127,10 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
         res[ds] = metrics.frame_block(df, dropped)
         if ds == "ffpp_test":
             res[ds]["auc_per_method"] = metrics.auc_per_method(df)
+    name = run_name_of(cfg)
+    tables.write_text_atomic(tables.result_markdown(res, name), run / "result.md")
     out = run / "result.json"
     write_json_atomic(res, out)
+    print(f"[{name}] kết quả best.pt (epoch {res['best_epoch']}/{res['epochs_run']}):\n{tables.result_text(res)}",
+          flush=True)
     return out

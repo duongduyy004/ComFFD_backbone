@@ -29,10 +29,16 @@ Copy-Item config.example.yaml config.yaml
 
 Sửa `data_root` = `out_root` của preprocessing (thư mục chứa `ffpp/` và `celebdf/`). `ckpt_root` mặc định
 `checkpoints/clip`. Mọi khóa đổi được tạm thời bằng `--set k=v` (vd `--set num_workers=8`); khóa lạ -> lỗi.
-`lr` và `p_jpeg` trong config bị pilot/main ghi đè (pilot thử lưới, main dùng giá trị đã chọn).
-**Không đổi config được băm giữa pilot và main** (mọi khóa trừ `data_root`, `ckpt_root`, `num_workers`, `lr`,
-`p_jpeg`, `arm`, `run_name`; kể cả `seed`, `max_epochs`, `model_revision`): pilot lưu `base_config` vào
-`selected.json`, main so lại và báo lỗi kèm danh sách trường khác.
+Không có pilot (bỏ 16/11/2026): `main` dùng đúng `lr`, `p_jpeg` (và mọi khóa khác) trong `config.yaml`.
+Giá trị trong `config.example.yaml`:
+
+- `lr: 1.0e-4`: theo run thử `lr1e-4_p0.5`, AUC frame val 0.9954 sau 3 epoch (16/11).
+- `p_jpeg: 0.5`.
+- `grad_checkpointing: false`: tắt nhanh hơn ~21%, VRAM ~8.8 GB (smoke 16/11). Khóa này **không vào
+  `config_hash`** (không đổi phép toán, chỉ đổi bộ nhớ/tốc độ), cùng `data_root`, `ckpt_root`, `num_workers`,
+  `run_name`.
+
+Mọi khóa khác vào `config_hash`: đổi giữa các lần chạy main thì run cũ báo lỗi (xóa thư mục run hoặc đổi `ckpt_root`).
 
 ### Test
 
@@ -41,7 +47,7 @@ python -m pytest -q                                                             
 $env:FFD_REAL_CONFIG = "config.yaml"; python -m pytest -q --run-gpu tests/test_smoke_gpu.py   # máy GPU, dữ liệu thật
 ```
 
-## Thứ tự chạy: smoke -> pilot -> main
+## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
 
@@ -50,22 +56,21 @@ PowerShell, thư mục `detector/`, đã activate `.venv`.
    ```powershell
    python -m ffd.cli smoke --config config.yaml --steps 50 --set num_workers=8
    ```
-   **Bắt buộc trước pilot:** chép `model_commit` in ra vào `model_revision` của `config.yaml` để ghim phiên bản
-   model. Ghim sau pilot sẽ làm main báo lỗi (config khác lúc pilot).
-2. **pilot** (arm `raw`, chỉ FF++ val): 3 run `lr` ∈ {1e-4, 2e-4, 5e-4} với `p_jpeg` 0.5, chọn `lr` có AUC frame val
-   cao nhất; rồi 2 run `p_jpeg` ∈ {0, 1} với `lr` đó; chọn `p_jpeg` có AUC cao nhất, hòa trong 0.005 thì lấy `p_jpeg`
-   nhỏ hơn. Kết quả: `checkpoints/clip/pilot/selected.json`.
-   ```powershell
-   python -m ffd.cli pilot --config config.yaml --set num_workers=8
-   ```
-3. **main**: train + eval `raw` và `raw_aug` với `lr`, `p_jpeg` đã chọn, rồi so sánh. Thiếu `selected.json`, thiếu
-   `<data_root>/celebdf/manifest.parquet` (**phải tiền xử lý Celeb-DF trước main**) hoặc config khác lúc pilot -> lỗi.
+   **Bắt buộc trước main:** chép `model_commit` in ra vào `model_revision` của `config.yaml` để ghim phiên bản
+   model (`model_revision` vào `config_hash`; ghim sau khi main đã chạy sẽ làm run cũ báo lỗi config khác).
+2. **main**: train + eval `raw` và `raw_aug` với `lr`, `p_jpeg` lấy từ `config.yaml`, rồi so sánh (`compare.json`),
+   in bảng tổng hợp và ghi `checkpoints/clip/summary.md`. Thiếu `<data_root>/celebdf/manifest.parquet`
+   (**phải tiền xử lý Celeb-DF trước main**) -> lỗi.
    ```powershell
    python -m ffd.cli main --config config.yaml --set num_workers=8
    if ($LASTEXITCODE -ne 0) { throw "main lỗi" }
    ```
 
-`pilot` và `main` chạy lại được sau khi bị ngắt: run có `result.json` đủ dataset được bỏ qua (thiếu dataset, hoặc
+Mỗi epoch in một dòng (stderr), vd
+`[raw] epoch 3: loss 0.1234 | val ACC 0.9500 AUC 0.9900 PREC 0.9600 REC 0.9700 F1 0.9650 BCE 0.1500 | best e3, bad 0/5`
+(số MINH HỌA). Sau eval mỗi run in bảng `dataset, n_frames, ACC, AUC, PREC, RECALL, F1, AUC_video` ra stdout.
+
+`main` chạy lại được sau khi bị ngắt: run có `result.json` đủ dataset được bỏ qua (thiếu dataset, hoặc
 `celebdf` bị `skipped` mà nay đã có dữ liệu -> chỉ eval lại); có `done.flag` thì chỉ eval; có `last.pt` thì train
 tiếp (resume); chưa có gì thì train mới. Run cũ có `config_hash` khác config hiện tại -> lỗi
 (xóa thư mục run hoặc đổi `ckpt_root`).
@@ -75,12 +80,11 @@ Lệnh lẻ (khi cần):
 ```powershell
 python -m ffd.cli train --config config.yaml --set arm=raw_aug [--resume | --force]   # một run; không dùng cả hai cờ
 python -m ffd.cli eval --run checkpoints/clip/raw [--datasets val,ffpp_test,celebdf] [--force] [--data-root <data_root trên máy này>]
-python -m ffd.cli eval --run checkpoints/clip/pilot/lr2e-4_p0.5 --datasets val --force   # run pilot: chỉ val
 python -m ffd.cli compare --ckpt-root checkpoints/clip
 ```
 
-`eval`: `--datasets` mặc định `val,ffpp_test,celebdf`; đã có `result.json` thì phải thêm `--force` (ghi đè); run
-pilot (`run_name` bắt đầu bằng `pilot/`) chỉ được chấm `val`, xin `ffpp_test`/`celebdf` -> lỗi.
+`eval`: `--datasets` mặc định `val,ffpp_test,celebdf`; đã có `result.json` thì phải thêm `--force` (ghi đè).
+Run cũ có `run_name` bắt đầu bằng `pilot/` (tạo trước 16/11) chỉ được chấm `val` (chống leakage).
 
 `--no-progress` (mọi lệnh) tắt thanh tiến trình ở stderr; đặt **sau** tên lệnh, vd
 `python -m ffd.cli main --no-progress --config config.yaml`.
@@ -90,22 +94,25 @@ pilot (`run_name` bắt đầu bằng `pilot/`) chỉ được chấm `val`, xin
 ```
 checkpoints/clip/
   smoke/smoke.json, smoke/samples/{rep,seam}_00..15.png
-  pilot/lr1e-4_p0.5/ lr2e-4_p0.5/ lr5e-4_p0.5/ lr<chọn>_p0/ lr<chọn>_p1/   # mỗi thư mục là một run
-  pilot/selected.json     # {"lr", "p_jpeg", "val_auc": {tên run: AUC frame val}, "base_config"}
   raw/  raw_aug/          # run chính
   compare.json
+  summary.md              # bảng tổng hợp cuối main
 ```
 
 Mỗi thư mục run: `run_info.json` (config đầy đủ, `config_hash`, `model_commit`, phiên bản thư viện, sha256 dữ liệu),
-`train_log.csv` (mỗi epoch một dòng), `last.pt` (để resume), `best.pt` (epoch tốt nhất theo AUC frame val, hòa trong
+`train_log.csv` (mỗi epoch một dòng, cột: `epoch, step, train_loss, lr, val_auc_frame, val_bce, val_acc,
+val_precision, val_recall, val_f1, frac_real, frac_rep, frac_seam, frac_jpeg, seconds`; chỉ số val ngưỡng logit >= 0,
+chỉ để theo dõi; log cũ 11 cột khi resume được ghi lại với header mới, ô thiếu để trống), `last.pt` (để resume), `best.pt` (epoch tốt nhất theo AUC frame val, hòa trong
 1e-4 thì BCE val thấp hơn), `done.flag` (`epochs_run`, `best_epoch`, `stopped_early` = dừng vì patience trước `max_epochs`, `total_steps`),
-`scores_<dataset>.parquet` (logit từng frame), `result.json`.
+`scores_<dataset>.parquet` (logit từng frame), `result.json`, `result.md` (cùng bảng in ra lúc eval dạng Markdown:
+tiêu đề run, `best_epoch`/`epochs_run`, bảng ACC/AUC/PREC/RECALL/F1/AUC_video từng dataset; `ffpp_test` thêm bảng
+AUC theo method).
 
 ## `result.json` (một run, chấm `best.pt`)
 
 - `arm`, `config` (model, commit, `lr`, `p_jpeg`, `max_epochs`, `patience`, LoRA, sha256 dữ liệu), `best_epoch`,
   `epochs_run`, `stopped_early`, `total_steps`.
-- Mỗi dataset (`val`, `ffpp_test`, `celebdf`; pilot chỉ có `val`): `auc` (AUC frame, lớp dương = fake), `auc_ci95`
+- Mỗi dataset (`val`, `ffpp_test`, `celebdf`): `auc` (AUC frame, lớp dương = fake), `auc_ci95`
   (bootstrap 2000 lần trên frame, seed 0), `acc`, `f1`, `recall`, `precision`, `confusion_matrix` (ngưỡng xác suất
   0.5), `n_frames`, `n_videos`, `n_videos_dropped` (video bị preprocessing loại hẳn theo `drops.parquet`; không tính video lỗi khi
   tiền xử lý), `auc_video` (tham khảo).
@@ -118,11 +125,14 @@ Mỗi thư mục run: `run_info.json` (config đầy đủ, `config_hash`, `mode
   2000 lần trên frame, seed 0), `delong_p` (DeLong ghép cặp). Hai arm phải chấm cùng tập frame và nhãn.
 - `total_steps`, `epochs_run`, `best_epoch` của từng arm; `note`.
 
+`summary.md` (cuối `main`, cũng in ra stdout): mỗi (arm, dataset) một dòng ACC, AUC, PREC, RECALL, F1; rồi với
+`ffpp_test`, `celebdf`: AUC raw, AUC raw_aug, hiệu, CI95, p DeLong (lấy từ `compare.json`).
+
 ## Ghi chú Exploratory
 
 `compare.json` luôn ghi: *"Exploratory: 1 run/arm, không prereg; frame trong cùng video tương quan nên CI và p-value
 lạc quan."* Chạy 1 run/arm (seed 0) và không pre-register là **quyết định có chủ ý** của chủ đề tài ngày 15/11/2026
 (ngoại lệ với nguyên tắc 4, 5 của project). Kết quả chỉ dùng để định hướng, không dùng làm claim.
 
-Chống leakage: `lr`, `p_jpeg`, epoch tốt nhất chỉ chọn trên FF++ val; FF++ test và Celeb-DF chỉ được đọc khi eval
+Chống leakage: `lr` chọn từ run thử trên FF++ val, epoch tốt nhất chỉ chọn trên FF++ val; FF++ test và Celeb-DF chỉ được đọc khi eval
 `best.pt`. **Không chỉnh gì sau khi xem test.**

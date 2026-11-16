@@ -2,6 +2,7 @@
 Dữ liệu: data_root tổng hợp (MINH HỌA), CLIP tí hon ngẫu nhiên, CPU."""
 import dataclasses
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -13,8 +14,10 @@ from ffd import train as T  # noqa: E402
 from ffd.config import TrainConfig  # noqa: E402
 from ffd.train import epoch_batches, is_better, train  # noqa: E402
 
-COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce",
-        "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
+COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce", "val_acc", "val_precision", "val_recall",
+        "val_f1", "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
+OLD_COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce",
+            "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]  # log trước 16/11
 
 
 @pytest.fixture
@@ -34,7 +37,8 @@ def scripted(monkeypatch, aucs, bce=0.5):
 
     def fake(model, val_df, cfg, device):
         calls.append(1)
-        return {"auc_frame": aucs[len(calls) - 1], "bce": bce}
+        return {"auc_frame": aucs[len(calls) - 1], "bce": bce, "acc": 0.5, "precision": 0.5, "recall": 0.5,
+                "f1": 0.5}
 
     monkeypatch.setattr(T, "_validate", fake)
     return calls
@@ -44,7 +48,9 @@ def test_train_writes_outputs(cfg_tiny, tiny):
     d = run(cfg_tiny, tiny)
     assert d == cfg_tiny.ckpt_root / "raw"
     log = pd.read_csv(d / "train_log.csv")
-    assert list(log.columns) == COLS
+    assert list(log.columns) == COLS and len(COLS) == 15
+    for c in ("val_auc_frame", "val_acc", "val_precision", "val_recall", "val_f1"):
+        assert log[c].notna().all() and ((log[c] >= 0) & (log[c] <= 1)).all(), c
     done = json.loads((d / "done.flag").read_text())
     assert (d / "best.pt").exists() and done["epochs_run"] == len(log) == 3
     assert list(log.epoch) == [1, 2, 3] and list(log.step) == [3, 6, 9]  # 96 ảnh / 32 = 3 bước/epoch
@@ -120,6 +126,35 @@ def test_resume_keeps_patience(cfg_tiny, tiny, monkeypatch, tmp_path):
     bb = torch.load(d / "best.pt", map_location="cpu", weights_only=False)
     assert ba["epoch"] == bb["epoch"] == 2
     assert all(torch.equal(ba["trainable"][k], bb["trainable"][k]) for k in ba["trainable"])
+
+
+def test_resume_with_old_11_col_log(cfg_tiny, tiny, monkeypatch, capsys):
+    """Log cũ 11 cột: resume ghi lại header 15 cột, ô thiếu để trống, epoch mới đủ chỉ số. In dòng epoch đúng mẫu."""
+    c = dataclasses.replace(cfg_tiny, max_epochs=2, batch_size=96)
+    save = T._atomic_save
+
+    class Stop(Exception):
+        pass
+
+    def save_then_stop(obj, path):
+        save(obj, path)
+        if path.name == "last.pt" and obj["epoch"] == 1:
+            raise Stop
+
+    monkeypatch.setattr(T, "_atomic_save", save_then_stop)
+    with pytest.raises(Stop):
+        run(c, tiny)
+    monkeypatch.setattr(T, "_atomic_save", save)
+    p = c.ckpt_root / "raw" / "train_log.csv"
+    pd.read_csv(p)[OLD_COLS].to_csv(p, index=False)  # giả lập log định dạng cũ
+    run(c, tiny, resume=True)
+    log = pd.read_csv(p)
+    assert list(log.columns) == COLS and list(log.epoch) == [1, 2]
+    assert log.loc[0, ["val_acc", "val_precision", "val_recall", "val_f1"]].isna().all()
+    assert log.loc[1, ["val_acc", "val_precision", "val_recall", "val_f1"]].between(0, 1).all()
+    err = capsys.readouterr().err
+    assert re.search(r"\[raw\] epoch 2: loss \d+\.\d{4} \| val ACC \d\.\d{4} AUC \d\.\d{4} PREC \d\.\d{4} "
+                     r"REC \d\.\d{4} F1 \d\.\d{4} BCE \d+\.\d{4} \| best e\d+, bad \d+/5", err)
 
 
 def test_refuse_finished_run(cfg_tiny, tiny):

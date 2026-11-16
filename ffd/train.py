@@ -6,12 +6,14 @@ Quy ước:
   nhỏ vẫn dùng (drop_last=False). Không class weight, không sampler cân bằng. `ds.set_epoch(epoch)` gọi ở tiến
   trình chính trước khi dựng DataLoader (persistent_workers=False nên worker thấy epoch mới).
 - AdamW + warmup tuyến tính (`warmup_frac`) + cosine trên `max_epochs * ceil(N / batch_size)` bước; clip grad norm 1.0.
-- Cuối mỗi epoch: val FF++ (frame, eval_transform) -> auc_frame, bce -> cập nhật best -> một dòng train_log.csv
+- Cuối mỗi epoch: val FF++ (frame, eval_transform) -> auc_frame, bce, acc, precision, recall, f1 (ngưỡng logit >= 0,
+  `metrics.threshold_metrics`; chỉ để theo dõi, không dùng chọn best) -> cập nhật best -> một dòng train_log.csv
   -> last.pt. Best theo (AUC frame, BCE): AUC hơn > 1e-4 thắng, hòa trong 1e-4 thì BCE thấp hơn.
   `bad_epochs` tăng khi AUC frame không vượt best cũ quá 1e-4 (hòa mà BCE tốt hơn vẫn cập nhật best.pt nhưng
   vẫn tính là epoch xấu); dừng khi `bad_epochs >= patience` hoặc hết `max_epochs`. `stopped_early` chỉ True khi
   dừng vì patience TRƯỚC max_epochs (đủ patience đúng ở epoch cuối -> False).
 - Resume chỉ ở biên epoch, từ last.pt; best.pt và train_log.csv được đưa về khớp last.pt (bỏ phần ghi sau nó).
+  train_log.csv cũ (11 cột, trước 16/11) được ghi lại với header LOG_COLS mới, ô thiếu để trống.
 - Cột `seconds` = thời gian thực của epoch (train + val). `frac_real` = tỉ lệ ảnh nhãn 0 trong epoch;
   `frac_rep`/`frac_seam` = tỉ lệ ảnh nguồn rep/seam; `frac_jpeg` = tỉ lệ ảnh đã nén JPEG.
 - Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. bf16 autocast trên CUDA.
@@ -34,7 +36,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from . import progress
+from . import metrics, progress
 from .config import TrainConfig, run_name_of
 from .data.ffpp import frames
 from .data.trainset import TrainList
@@ -46,7 +48,7 @@ from .rundir import prepare_run_dir, write_run_info
 from .stats import auc
 
 LOG_COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce",
-            "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
+            "val_acc", "val_precision", "val_recall", "val_f1", "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
 TOL = 1e-4
 
 
@@ -131,14 +133,14 @@ def _bce(logit: np.ndarray, y: np.ndarray) -> float:
 
 
 def _validate(model, val_df: pd.DataFrame, cfg: TrainConfig, device) -> dict:
-    """{"auc_frame", "bce"} trên FF++ val. Một lớp hoặc logit/metric không hữu hạn -> ValueError."""
+    """{"auc_frame", "bce", "acc", "precision", "recall", "f1"} trên FF++ val. Một lớp hoặc logit/metric không hữu hạn -> ValueError."""
     y = val_df.label.to_numpy(int)
     if len(np.unique(y)) < 2:
         raise ValueError("Val chỉ có một lớp: không tính được AUC")
     lg = score_frames(model, val_df, cfg.batch_size, device, cfg.num_workers, "val")
     if not np.isfinite(lg).all():
         raise ValueError("Val có logit không hữu hạn")
-    m = {"auc_frame": float(auc(y, lg)), "bce": _bce(lg, y)}
+    m = {"auc_frame": float(auc(y, lg)), "bce": _bce(lg, y), **metrics.threshold_metrics(y, lg)}
     if not all(np.isfinite(v) for v in m.values()):
         raise ValueError(f"Metric val không hữu hạn: {m}")
     return m
@@ -163,16 +165,17 @@ def _set_rng_state(s: dict) -> None:
 
 
 def _append_log(path: Path, row: dict) -> None:
+    """Ghi một dòng theo LOG_COLS; cột thiếu trong row (log cũ) để trống."""
     new = not path.exists()
     with open(path, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=LOG_COLS)
+        w = csv.DictWriter(f, fieldnames=LOG_COLS, restval="")
         if new:
             w.writeheader()
         w.writerow(row)
 
 
 def _truncate_log(path: Path, epoch: int) -> None:
-    """Bỏ các dòng ghi sau last.pt (epoch > epoch đã lưu)."""
+    """Bỏ các dòng ghi sau last.pt (epoch > epoch đã lưu); ghi lại với header LOG_COLS (log cũ thiếu cột -> ô trống)."""
     if not path.exists():
         return
     with open(path, newline="", encoding="utf-8") as f:
@@ -294,15 +297,17 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         bad = 0 if old_auc is None or m["auc_frame"] > old_auc + TOL else bad + 1
         _append_log(d / "train_log.csv", {
             "epoch": epoch, "step": step, "train_loss": loss_sum / n, "lr": sched.get_last_lr()[0],
-            "val_auc_frame": m["auc_frame"], "val_bce": m["bce"],
+            "val_auc_frame": m["auc_frame"], "val_bce": m["bce"], "val_acc": m["acc"],
+            "val_precision": m["precision"], "val_recall": m["recall"], "val_f1": m["f1"],
             "frac_real": float(np.mean(labels == 0)), "frac_rep": float(np.mean(sources == "rep")),
             "frac_seam": float(np.mean(sources == "seam")), "frac_jpeg": n_jpeg / n,
             "seconds": time.perf_counter() - t0})
         _atomic_save({"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
                       "scheduler": sched.state_dict(), "rng": _rng_state(), "epoch": epoch, "step": step,
                       "best": best, "best_state": best_state, "bad_epochs": bad}, d / "last.pt")
-        print(f"[{name}] epoch {epoch}: loss {loss_sum / n:.4f}, val AUC {m['auc_frame']:.4f}, "
-              f"BCE {m['bce']:.4f}, best e{best['epoch']}, bad {bad}/{cfg.patience}", file=sys.stderr, flush=True)
+        print(f"[{name}] epoch {epoch}: loss {loss_sum / n:.4f} | val ACC {m['acc']:.4f} AUC {m['auc_frame']:.4f} "
+              f"PREC {m['precision']:.4f} REC {m['recall']:.4f} F1 {m['f1']:.4f} BCE {m['bce']:.4f} | "
+              f"best e{best['epoch']}, bad {bad}/{cfg.patience}", file=sys.stderr, flush=True)
 
     write_json_atomic({"epochs_run": epoch, "best_epoch": None if best is None else best["epoch"],
                        "stopped_early": bad >= cfg.patience and epoch < cfg.max_epochs, "total_steps": step}, d / "done.flag")

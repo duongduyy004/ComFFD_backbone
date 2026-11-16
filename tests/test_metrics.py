@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import pytest
 
-from ffd.metrics import auc_per_method, frame_block
+from ffd.metrics import auc_per_method, frame_block, threshold_metrics
 
 
 def test_frame_block_known_values():
@@ -16,6 +16,16 @@ def test_frame_block_known_values():
     assert b["auc_video"] == 1.0 and b["recall"] == 0.5 and b["precision"] == 0.5 and b["f1"] == 0.5
     assert len(b["auc_ci95"]) == 2
     json.dumps(b)  # phải serialise được
+
+
+def test_threshold_metrics_matches_frame_block():
+    y, s = [0, 0, 1, 1, 1], [-2., 0., 3., -1., 0.5]  # logit 0 -> dương (ngưỡng >= 0)
+    m = threshold_metrics(y, s)
+    assert m == {"acc": 0.6, "precision": pytest.approx(2 / 3), "recall": pytest.approx(2 / 3),
+                 "f1": pytest.approx(2 / 3)}
+    b = frame_block(pd.DataFrame({"video_id": list("abcde"), "label": y, "logit": s}), 0)
+    assert all(b[k] == m[k] for k in m)
+    assert threshold_metrics([0, 0], [-1., -2.]) == {"acc": 1.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}
 
 
 def test_auc_per_method():

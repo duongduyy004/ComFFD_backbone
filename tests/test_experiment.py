@@ -1,5 +1,5 @@
-"""Test pilot/chạy chính (ffd.experiment) với train/eval giả, không cần model. Trạng thái: chưa chạy thử trên GPU.
-Số AUC trong test là MINH HỌA."""
+"""Test chạy chính (ffd.experiment) với train/eval giả, không cần model. Trạng thái: chưa chạy thử trên GPU.
+Số AUC/chỉ số trong test là MINH HỌA."""
 import json
 
 import pytest
@@ -8,16 +8,16 @@ pytest.importorskip("torch")
 
 from ffd import experiment as X  # noqa: E402
 from ffd.config import TrainConfig  # noqa: E402
-from ffd.experiment import fmt_lr, run_main, run_pilot  # noqa: E402
-
-
-def test_fmt_lr():
-    assert [fmt_lr(x) for x in (1e-4, 2e-4, 5e-4)] == ["1e-4", "2e-4", "5e-4"]
-    assert fmt_lr(1.5e-4) == "1.5e-4"
+from ffd.experiment import run_main  # noqa: E402
 
 
 def _cfg(tmp_path, **kw):
     return TrainConfig(data_root=tmp_path / "data", ckpt_root=tmp_path / "ck", **kw)
+
+
+def _block(a):
+    """Khối chỉ số dataset MINH HỌA."""
+    return {"auc": a, "acc": 0.9, "precision": 0.8, "recall": 0.7, "f1": 0.75, "n_frames": 10, "auc_video": a}
 
 
 def fake_runs(monkeypatch, aucs):
@@ -33,10 +33,9 @@ def fake_runs(monkeypatch, aucs):
         return d
 
     def fake_eval(run, *, datasets=("val", "ffpp_test", "celebdf"), **kw):
-        name = run.relative_to(run.parents[1]).as_posix() if run.parent.name == "pilot" else run.name
-        calls.append(("eval", name, tuple(datasets)))
+        calls.append(("eval", run.name, tuple(datasets)))
         p = run / "result.json"
-        p.write_text(json.dumps({"val": {"auc": aucs.get(name, 0.5)}}))
+        p.write_text(json.dumps({ds: _block(aucs.get(run.name, 0.5)) for ds in datasets}))
         return p
 
     monkeypatch.setattr(X, "train", fake_train)
@@ -44,27 +43,19 @@ def fake_runs(monkeypatch, aucs):
     return calls
 
 
-def _aucs(p0, p1, lr=(0.80, 0.85, 0.83)):
-    a = {f"pilot/lr{fmt_lr(x)}_p0.5": v for x, v in zip((1e-4, 2e-4, 5e-4), lr)}
-    a["pilot/lr2e-4_p0"], a["pilot/lr2e-4_p1"] = p0, p1
-    return a
+def _fake_compare(root):
+    """compare.json MINH HỌA (ffpp_test có số, celebdf skipped)."""
+    p = root / "compare.json"
+    p.write_text(json.dumps({"ffpp_test": {"auc_raw": 0.8, "auc_raw_aug": 0.85, "diff": 0.05,
+                                           "diff_ci95": [0.01, 0.09], "delong_p": 0.012},
+                             "celebdf": {"skipped": "lý do MINH HỌA"}, "note": "Exploratory"}))
+    return p
 
 
-def test_pilot_selection_rule(monkeypatch, tmp_path):
-    calls = fake_runs(monkeypatch, _aucs(0.847, 0.86))
-    sel = json.loads(run_pilot(_cfg(tmp_path, arm="raw_aug")).read_text())
-    assert (sel["lr"], sel["p_jpeg"]) == (2e-4, 1.0)
-    assert set(sel["val_auc"]) == {"pilot/lr1e-4_p0.5", "pilot/lr2e-4_p0.5", "pilot/lr5e-4_p0.5",
-                                   "pilot/lr2e-4_p0", "pilot/lr2e-4_p1"}
-    trains = [c for c in calls if c[0] == "train"]
-    assert len(trains) == 5 and all(c[6] == "raw" for c in trains)  # pilot chỉ arm raw
-    assert all(c[2] == ("val",) for c in calls if c[0] == "eval")  # pilot chỉ chấm val
-
-
-def test_pilot_tie_prefers_smaller_p(monkeypatch, tmp_path):
-    fake_runs(monkeypatch, _aucs(0.848, 0.851))
-    sel = json.loads(run_pilot(_cfg(tmp_path)).read_text())
-    assert (sel["lr"], sel["p_jpeg"]) == (2e-4, 0.0)
+def _celeb(tmp_path):
+    m = tmp_path / "data" / "celebdf" / "manifest.parquet"
+    m.parent.mkdir(parents=True)
+    m.write_bytes(b"x")
 
 
 def test_ensure_run_resume_rules(monkeypatch, tmp_path):
@@ -102,58 +93,34 @@ def test_ensure_run_rejects_other_config(monkeypatch, tmp_path):
         X.ensure_run(_cfg(tmp_path), ("val",))
 
 
-def test_main_requires_selected(tmp_path):
-    with pytest.raises(FileNotFoundError, match="pilot"):
-        run_main(_cfg(tmp_path))
-
-
-def _selected(tmp_path, cfg, celeb=True):
-    """selected.json MINH HỌA (lr 5e-4, p_jpeg 1) với base_config của cfg; celeb -> tạo manifest Celeb-DF giả."""
-    sel = tmp_path / "ck" / "pilot" / "selected.json"
-    sel.parent.mkdir(parents=True)
-    sel.write_text(json.dumps({"lr": 5e-4, "p_jpeg": 1.0, "val_auc": {}, "base_config": X.base_config(cfg)}))
-    if celeb:
-        m = tmp_path / "data" / "celebdf" / "manifest.parquet"
-        m.parent.mkdir(parents=True)
-        m.write_bytes(b"x")
-    return sel
-
-
-def test_main_uses_selected(monkeypatch, tmp_path):
-    calls = fake_runs(monkeypatch, {})
-    monkeypatch.setattr(X, "compare_runs", lambda root: root / "compare.json")
-    _selected(tmp_path, _cfg(tmp_path))
-    assert run_main(_cfg(tmp_path)) == tmp_path / "ck" / "compare.json"
+def test_main_uses_config_lr_pjpeg(monkeypatch, tmp_path, capsys):
+    """main train raw, raw_aug với đúng lr/p_jpeg của config (không pilot), gọi compare, ghi summary.md."""
+    calls = fake_runs(monkeypatch, {"raw": 0.8, "raw_aug": 0.85})
+    monkeypatch.setattr(X, "compare_runs", _fake_compare)
+    _celeb(tmp_path)
+    assert run_main(_cfg(tmp_path, lr=3e-4, p_jpeg=0.2, arm="raw_aug")) == tmp_path / "ck" / "compare.json"
     trains = [c for c in calls if c[0] == "train"]
-    assert [(c[1], c[4], c[5], c[6]) for c in trains] == [("raw", 5e-4, 1.0, "raw"), ("raw_aug", 5e-4, 1.0, "raw_aug")]
+    assert [(c[1], c[4], c[5], c[6]) for c in trains] == [("raw", 3e-4, 0.2, "raw"), ("raw_aug", 3e-4, 0.2, "raw_aug")]
     assert all(c[2] == ("val", "ffpp_test", "celebdf") for c in calls if c[0] == "eval")
+    assert not (tmp_path / "ck" / "pilot").exists()
+    md = (tmp_path / "ck" / "summary.md").read_text(encoding="utf-8")
+    assert "| raw_aug | celebdf | 0.9000 | 0.8500 | 0.8000 | 0.7000 | 0.7500 |" in md
+    assert "| ffpp_test | 0.8000 | 0.8500 | +0.0500 | [+0.0100, +0.0900] | 0.012 |" in md
+    assert "| celebdf | skipped: lý do MINH HỌA |" in md
+    out = capsys.readouterr().out
+    assert "AUC raw_aug" in out and "p DeLong" in out and "RECALL" in out
 
 
 def test_main_requires_celebdf(monkeypatch, tmp_path):
     calls = fake_runs(monkeypatch, {})
-    _selected(tmp_path, _cfg(tmp_path), celeb=False)
     with pytest.raises(FileNotFoundError, match="celebdf"):
         run_main(_cfg(tmp_path))
     assert calls == []
 
 
-def test_main_rejects_changed_base_config(monkeypatch, tmp_path):
-    """Đổi max_epochs giữa pilot và main -> ValueError nêu trường khác; chỉ khác lr/p_jpeg/arm thì vẫn chạy."""
-    calls = fake_runs(monkeypatch, {})
-    monkeypatch.setattr(X, "compare_runs", lambda root: root / "compare.json")
-    _selected(tmp_path, _cfg(tmp_path, lr=1e-3, p_jpeg=0.2, arm="raw_aug"))
-    with pytest.raises(ValueError, match="max_epochs"):
-        run_main(_cfg(tmp_path, max_epochs=7))
-    assert calls == []
-    run_main(_cfg(tmp_path))
-
-
-def test_pilot_writes_base_config(monkeypatch, tmp_path):
-    fake_runs(monkeypatch, _aucs(0.847, 0.86))
-    sel = json.loads(run_pilot(_cfg(tmp_path, seed=3)).read_text())
-    b = sel["base_config"]
-    assert b["seed"] == 3 and b["max_epochs"] == 30 and b["lora_targets"] == ["q_proj", "v_proj"]
-    assert not {"lr", "p_jpeg", "arm", "run_name", "data_root", "ckpt_root", "num_workers"} & set(b)
+def test_no_pilot_api():
+    for name in ("run_pilot", "fmt_lr", "base_config", "pilot_name"):
+        assert not hasattr(X, name)
 
 
 def test_ensure_run_reevaluates_skipped_celebdf(monkeypatch, tmp_path):
@@ -165,9 +132,7 @@ def test_ensure_run_reevaluates_skipped_celebdf(monkeypatch, tmp_path):
     old = {"val": {"auc": 0.7}, "ffpp_test": {"auc": 0.6}, "celebdf": {"skipped": "không có"}}
     (d / "result.json").write_text(json.dumps(old))
     assert X.ensure_run(cfg, X.MAIN_DATASETS) == old and calls == []
-    m = tmp_path / "data" / "celebdf" / "manifest.parquet"
-    m.parent.mkdir(parents=True)
-    m.write_bytes(b"x")
+    _celeb(tmp_path)
     X.ensure_run(cfg, X.MAIN_DATASETS)
     assert calls == [("eval", "raw", ("val", "ffpp_test", "celebdf"))]
 

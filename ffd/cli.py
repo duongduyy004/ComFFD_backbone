@@ -1,6 +1,7 @@
-"""CLI: python -m ffd.cli {pilot,main,train,eval,compare,smoke}.
+"""CLI: python -m ffd.cli {main,train,eval,compare,smoke}.
 
-Thứ tự dùng: smoke -> pilot -> main. Import nặng (torch, model) để trễ trong từng lệnh, nên lỗi tham số thất bại nhanh.
+Thứ tự dùng: smoke -> main (không còn pilot từ 16/11; lr, p_jpeg lấy từ config).
+Import nặng (torch, model) để trễ trong từng lệnh, nên lỗi tham số thất bại nhanh.
 CLI không truyền allow_cpu (train thật cần CUDA). `--set k=v` đi qua load_train_config (khóa lạ bị từ chối).
 Trạng thái: chưa chạy thử trên GPU.
 """
@@ -43,14 +44,6 @@ def _load_cfg(config, sets):
         raise SystemExit(f"Lỗi config: {e}") from e
 
 
-def _cmd_pilot(a):
-    from . import experiment
-
-    p = experiment.run_pilot(_load_cfg(a.config, a.set))
-    print(p)
-    print(p.read_text(encoding="utf-8"))
-
-
 def _cmd_main(a):
     from . import experiment
 
@@ -88,7 +81,7 @@ def _cmd_eval(a):
         info = json.loads(info_p.read_text(encoding="utf-8"))
         name = (info.get("config") or {}).get("run_name") or info.get("run_name") or ""
         held = [x for x in datasets if x in _HELD_OUT]
-        if str(name).startswith("pilot/") and held:
+        if str(name).startswith("pilot/") and held:  # run pilot cũ (trước 16/11) trên đĩa: vẫn chỉ val
             raise SystemExit(f"Lỗi eval: run pilot ({name}) chỉ được chấm val, không chấm {held} (chống leakage); "
                              "dùng --datasets val")
     from .evaluate import evaluate_run
@@ -136,8 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
         s.set_defaults(fn=fn)
         return s
 
-    with_config("pilot", _cmd_pilot, "5 run arm raw, chỉ val -> <ckpt_root>/pilot/selected.json")
-    with_config("main", _cmd_main, "train + eval raw, raw_aug với lr/p_jpeg đã chọn -> compare.json")
+    with_config("main", _cmd_main, "train + eval raw, raw_aug (lr/p_jpeg từ config) -> compare.json, summary.md")
     t = with_config("train", _cmd_train, "train một run (<ckpt_root>/<run_name>)")
     t.add_argument("--resume", action="store_true", help="chạy tiếp từ last.pt")
     t.add_argument("--force", action="store_true", help="xóa kết quả cũ của run rồi chạy lại")
@@ -148,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--run", required=True)
     e.add_argument("--data-root", default=None, help="data_root trên máy eval (khác máy train); dữ liệu phải trùng hash")
     e.add_argument("--datasets", default=",".join(EVAL_DATASETS),
-                   help="danh sách cách nhau bởi dấu phẩy (val,ffpp_test,celebdf); run pilot chỉ được val")
+                   help="danh sách cách nhau bởi dấu phẩy (val,ffpp_test,celebdf); run pilot cũ chỉ được val")
     e.add_argument("--force", action="store_true", help="ghi đè result.json đã có")
     e.set_defaults(fn=_cmd_eval)
 

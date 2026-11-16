@@ -16,8 +16,9 @@ import yaml
 ARMS = ("raw", "raw_aug")
 _PATH_FIELDS = ("data_root", "ckpt_root")
 _TUPLE_FIELDS = ("lora_targets", "tap_layers")
-# Không băm đường dẫn/worker/tên run (không ảnh hưởng kết quả).
-_HASH_SKIP = ("data_root", "ckpt_root", "num_workers", "run_name")
+# Không băm đường dẫn/worker/tên run (không ảnh hưởng kết quả). grad_checkpointing: không đổi phép toán,
+# chỉ đổi bộ nhớ/tốc độ (16/11).
+_HASH_SKIP = ("data_root", "ckpt_root", "num_workers", "grad_checkpointing", "run_name")
 
 
 @dataclass(frozen=True)
