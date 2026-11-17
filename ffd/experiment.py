@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import tables
 from .compare import compare_runs
-from .config import ARMS, TrainConfig, config_hash
+from .config import TrainConfig, config_hash
 from .data.ffpp import celebdf_dir
 from .evaluate import DATASETS, evaluate_run
 from .rundir import run_dir
@@ -77,6 +77,9 @@ def ensure_run(cfg: TrainConfig, datasets, *, vision_config=None, allow_cpu: boo
     return json.loads(Path(res).read_text(encoding="utf-8"))
 
 
+MAIN_ARMS = ("raw", "raw_aug")  # `main` chỉ chạy 2 arm cũ; arm filt do lệnh riêng (Task 4)
+
+
 def run_main(base_cfg: TrainConfig, *, vision_config=None, allow_cpu: bool = False, device=None) -> Path:
     """Train + eval raw, raw_aug với đúng config (lr, p_jpeg...) -> compare.json; in bảng tổng hợp, ghi summary.md."""
     root = Path(base_cfg.ckpt_root)
@@ -85,7 +88,7 @@ def run_main(base_cfg: TrainConfig, *, vision_config=None, allow_cpu: bool = Fal
         raise FileNotFoundError(f"Thiếu {celeb}: main bắt buộc có Celeb-DF; chạy tiền xử lý Celeb-DF trước `main`")
     print(f"Config hiệu lực của main (arm raw, raw_aug):\n{effective_settings(base_cfg)}", flush=True)
     results = {}
-    for arm in ARMS:
+    for arm in MAIN_ARMS:
         cfg = dataclasses.replace(base_cfg, arm=arm, run_name=arm)
         results[arm] = ensure_run(cfg, MAIN_DATASETS, vision_config=vision_config, allow_cpu=allow_cpu, device=device)
     out = compare_runs(root)

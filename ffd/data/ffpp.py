@@ -50,15 +50,18 @@ def frames(data_root, dataset: Literal["ffpp", "celebdf"], split: str | None) ->
 
 
 def aug_frames(data_root) -> pd.DataFrame:
-    """Ảnh tăng cường (chỉ video train): rep (label 1), seam (label 0). Nhãn theo `kind`, không theo `method`."""
+    """Ảnh tăng cường (chỉ video train): rep (label 1), seam (label 0). Nhãn theo `kind`, không theo `method`.
+    `mask_path` tuyệt đối như `path`; `r`, `mask_frac_final` dùng cho lọc (augfilter)."""
     root = ffpp_dir(data_root)
     man = _read(root / "manifest_aug.parquet")
     bad = man.label.astype(int) != (man.kind == "rep").astype(int)
     if bad.any():
         raise ValueError(f"manifest_aug: {int(bad.sum())} dòng có label != (kind == 'rep')")
-    out = man[["path", "label", "kind", "tid", "video_id", "frame_idx"]].copy()
+    out = man[["path", "label", "kind", "tid", "video_id", "frame_idx", "method", "r", "mask_frac_final",
+               "mask_path"]].copy()
     out["tid"] = out.tid.astype(str)
     out["path"] = out.path.map(lambda p: root / p)
+    out["mask_path"] = out.mask_path.map(lambda p: root / p)
     return out.reset_index(drop=True)
 
 

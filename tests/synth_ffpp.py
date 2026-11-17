@@ -15,6 +15,7 @@ SIZE = 224
 METHODS = ("DF", "F2F", "FS", "NT", "FSh")
 N_TID = {"train": 4, "val": 2, "test": 2}
 N_FRAMES = 4
+R_CYCLE = (0.5, 0.75, 1.0, 1.0)  # r và mask_frac_final của ảnh aug tổng hợp (MINH HỌA)
 
 RAW_COLS = ["path", "split", "label", "method", "tid", "video_id", "frame_idx", "crop_x0", "crop_y0", "crop_x1",
             "crop_y1", "src_w", "src_h", "det_score", "face_px", "yaw", "eye_dist"]
@@ -76,10 +77,15 @@ def make_data_root(root: Path, seed: int = 0) -> Path:
                 for kind in ("rep", "seam"):
                     rel = Path("aug") / "train" / kind / f"{tid}_{f:05d}.png"
                     _write(ffpp / rel, _img(rng, kind == "rep"))
+                    mrel = Path("aug") / "train" / "mask" / kind / f"{tid}_{f:05d}.png"
+                    mask = np.zeros((SIZE, SIZE), np.uint8)
+                    mask[80:150, 80:150] = 255
+                    _write(ffpp / mrel, mask)
                     # method của seam = method mượn mask (không dùng cho nhãn)
-                    aug.append(_fill(AUG_COLS, path=rel.as_posix(), mask_path="", kind=kind, label=int(kind == "rep"),
-                                     tid=tid, video_id=tid, frame_idx=f, method=METHODS[f % len(METHODS)],
-                                     regions="mouth"))
+                    aug.append(_fill(AUG_COLS, path=rel.as_posix(), mask_path=mrel.as_posix(), kind=kind,
+                                     label=int(kind == "rep"), tid=tid, video_id=tid, frame_idx=f,
+                                     method=METHODS[f % len(METHODS)], regions="mouth",
+                                     r=R_CYCLE[f % len(R_CYCLE)], mask_frac_final=0.02 * (f + 1)))
     drops = [
         _fill(DROP_COLS, level="video", split="test", method="DF", tid="006", video_id="006_056", frame_idx=-1,
               kind="", reason="no_face"),

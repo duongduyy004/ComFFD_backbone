@@ -13,7 +13,9 @@ from typing import Literal
 
 import yaml
 
-ARMS = ("raw", "raw_aug")
+ARMS = ("raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc")
+FILTER_ARMS = ("raw_aug_filt", "raw_aug_filt_loc")
+LOC_ARMS = ("raw_aug_filt_loc",)
 _PATH_FIELDS = ("data_root", "ckpt_root")
 _TUPLE_FIELDS = ("lora_targets", "tap_layers")
 # Không băm đường dẫn/worker/tên run (không ảnh hưởng kết quả). grad_checkpointing: không đổi phép toán,
@@ -25,7 +27,7 @@ _HASH_SKIP = ("data_root", "ckpt_root", "num_workers", "grad_checkpointing", "ru
 class TrainConfig:
     data_root: Path  # out_root của preprocessing (chứa manifest và ảnh)
     ckpt_root: Path = Path("checkpoints/clip")
-    arm: Literal["raw", "raw_aug"] = "raw"
+    arm: Literal["raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc"] = "raw"
     run_name: str | None = None  # None -> dùng arm
     seed: int = 0
     model_name: str = "openai/clip-vit-large-patch14"

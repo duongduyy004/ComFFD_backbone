@@ -16,7 +16,7 @@ def test_defaults_v2(tmp_path):
     c = load_train_config(wr(tmp_path))
     assert (c.model_name, c.max_epochs, c.patience, c.p_jpeg, c.jpeg_q, c.arm) == \
         ("openai/clip-vit-large-patch14", 30, 5, 0.5, 95, "raw")
-    assert run_name_of(c) == "raw" and ARMS == ("raw", "raw_aug")
+    assert run_name_of(c) == "raw" and ARMS == ("raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc")
     assert isinstance(c.data_root, Path) and isinstance(c.ckpt_root, Path)
     assert c.ckpt_root == Path("checkpoints/clip") and c.lora_targets == ("q_proj", "v_proj")
     assert c.tap_layers == () and c.batch_size == 32 and c.seed == 0
