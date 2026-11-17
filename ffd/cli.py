@@ -99,7 +99,8 @@ def _cmd_compare(a):
 
     root = Path(a.ckpt_root)
     try:
-        for x, y in (("raw", "raw_aug"), *PAIRS):
+        extra = [tuple(x) for x in (a.pair or [])]
+        for x, y in (("raw", "raw_aug"), *PAIRS, *extra):
             missing = [m for m in (x, y) if not (root / m / "result.json").exists()]
             if missing:
                 print(f"Bỏ qua cặp {x} vs {y}: thiếu result.json của {', '.join(missing)}")
@@ -166,6 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
     c = sp.add_parser("compare", parents=[common], help="so sánh raw vs raw_aug -> compare.json, và các cặp (raw,filt) (raw,filt_loc) (raw_aug,filt) (filt,filt_loc) "
                   "có đủ hai run -> compare_<a>__<b>.json (cặp thiếu run: bỏ qua, có ghi chú)")
     c.add_argument("--ckpt-root", required=True)
+    c.add_argument("--pair", nargs=2, action="append", metavar=("A", "B"),
+                   help="thêm cặp tùy ý (diff = AUC(B) - AUC(A)), ví dụ --pair raw raw_strongaug; lặp được")
     c.set_defaults(fn=_cmd_compare)
 
     g = sp.add_parser("diagnose", parents=[common], help="chẩn đoán raw_aug so với raw -> <ckpt_root>/diagnose/")

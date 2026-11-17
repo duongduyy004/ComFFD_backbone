@@ -234,6 +234,8 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         extra = {"model_commit": commit}
         if cfg.arm in FILTER_ARMS:  # arm cũ: run_info giữ nguyên cấu trúc
             extra.update(arm_constants=consts, aug_stats=ds.aug_stats)
+        elif consts:  # raw_strongaug: chỉ có hằng số suy giảm, không có aug_stats
+            extra.update(arm_constants=consts)
         write_run_info(d, cfg, extra)
     use_loc = cfg.arm in LOC_ARMS
     allow_read("train", "ffpp_val")

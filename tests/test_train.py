@@ -268,3 +268,25 @@ def test_resume_refuses_missing_arm_constants(cfg_tiny_loc, tiny):
     p.write_text(json.dumps(info), encoding="utf-8")
     with pytest.raises(ValueError, match="hằng số arm"):
         run(cfg_tiny_loc, tiny, resume=True)
+
+
+def test_train_strongaug_arm_runs(cfg_tiny, tiny):
+    """raw_strongaug: train được, tập train = raw (không rep/seam), run_info có arm_constants và không có aug_stats."""
+    d = run(dataclasses.replace(cfg_tiny, arm="raw_strongaug", max_epochs=1), tiny)
+    log = pd.read_csv(d / "train_log.csv")
+    assert (log.frac_rep == 0).all() and (log.frac_seam == 0).all() and np.isfinite(log.train_loss).all()
+    info = json.loads((d / "run_info.json").read_text(encoding="utf-8"))
+    assert info["arm_constants"]["strong"]["jpeg_q_min"] == 40 and "aug_stats" not in info
+
+
+def test_resume_refuses_changed_strong_constants(cfg_tiny, tiny, monkeypatch):
+    cfg = dataclasses.replace(cfg_tiny, arm="raw_strongaug", max_epochs=2)
+    scripted(monkeypatch, [0.9, 0.9])
+    d = run(cfg, tiny)
+    p = d / "run_info.json"
+    info = json.loads(p.read_text(encoding="utf-8"))
+    info["arm_constants"]["strong"]["p_blur"] = 0.1
+    p.write_text(json.dumps(info), encoding="utf-8")
+    (d / "done.flag").unlink()
+    with pytest.raises(ValueError, match="hằng số arm khác"):
+        run(cfg, tiny, resume=True)

@@ -12,11 +12,11 @@ import torch
 from torch.utils.data import Dataset
 
 from .. import io_utils
-from ..config import ARMS, FILTER_ARMS, LOC_ARMS
+from ..config import ALL_ARMS, FILTER_ARMS, LOC_ARMS, STRONG_ARMS
 from ..guards import LeakageError, allow_read
 from . import ffpp
 from .augfilter import balance_aug, filter_aug
-from .transforms import train_transform
+from .transforms import strong_train_transform, train_transform
 
 
 def pool_mask(mask: np.ndarray, grid: int) -> np.ndarray:
@@ -34,8 +34,8 @@ class TrainList(Dataset):
     `aug_stats`: thống kê lọc + cân bằng (rỗng ở arm cũ)."""
 
     def __init__(self, data_root, arm: str, seed: int, p_jpeg: float, jpeg_q: int, grid: int = 16):
-        if arm not in ARMS:
-            raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
+        if arm not in ALL_ARMS:
+            raise ValueError(f"arm phải thuộc {ALL_ARMS}, nhận {arm!r}")
         allow_read("train", "ffpp_train")
         raw = ffpp.frames(data_root, "ffpp", "train")
         parts = [pd.DataFrame({"path": raw.path, "label": raw.label.astype(int), "source": "raw",
@@ -78,7 +78,8 @@ class TrainList(Dataset):
 
     def __getitem__(self, i: int) -> dict:
         rng = np.random.default_rng(io_utils.item_seed(str(self.seed), str(self.epoch), str(i)))
-        x, jpg, flipped = train_transform(io_utils.read_image(self._paths[i]), rng, self.p_jpeg, self.jpeg_q)
+        tf = strong_train_transform if self.arm in STRONG_ARMS else train_transform  # strong: chỉ ảnh raw, mọi lớp như nhau
+        x, jpg, flipped = tf(io_utils.read_image(self._paths[i]), rng, self.p_jpeg, self.jpeg_q)
         row = self.items.iloc[i]
         out = {"image": x, "label": float(row.label), "source": str(row.source), "jpeg": jpg}
         if self.arm in LOC_ARMS:

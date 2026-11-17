@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ..config import ARMS, FILTER_ARMS, LOC_ARMS
+from ..config import ALL_ARMS, FILTER_ARMS, LOC_ARMS, STRONG_ARMS
 from ..io_utils import item_seed
 
 FILTER_MIN_R = 0.75
@@ -18,8 +18,11 @@ LOC_LAMBDA = 1.0
 
 def arm_constants(arm: str) -> dict:
     """Hằng số gắn arm (không nằm trong TrainConfig). Arm cũ -> {}."""
-    if arm not in ARMS:
-        raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
+    if arm not in ALL_ARMS:
+        raise ValueError(f"arm phải thuộc {ALL_ARMS}, nhận {arm!r}")
+    if arm in STRONG_ARMS:  # suy giảm chất lượng (transforms.STRONG), ghi vào run_info để resume/eval không nhầm run cũ
+        from .transforms import STRONG
+        return {"strong": {k: list(v) if isinstance(v, tuple) else v for k, v in STRONG.items()}}
     if arm not in FILTER_ARMS:
         return {}
     c = {"filter_min_r": FILTER_MIN_R, "filter_mask": "median_rep"}
@@ -31,7 +34,7 @@ def arm_constants(arm: str) -> dict:
 def check_arm_constants(arm: str, info: dict, action: str) -> None:
     """Arm filt: run_info.json phải có `arm_constants` đúng bằng hằng số hiện tại, nếu không ValueError.
     Dùng chung cho resume (train) và bỏ qua/eval lại (experiment.ensure_run). Arm cũ: không kiểm."""
-    if arm in FILTER_ARMS and info.get("arm_constants") != arm_constants(arm):
+    if (arm in FILTER_ARMS or arm in STRONG_ARMS) and info.get("arm_constants") != arm_constants(arm):
         raise ValueError(f"hằng số arm khác run cũ ({info.get('arm_constants')} != {arm_constants(arm)}); {action}")
 
 
