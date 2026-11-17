@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -94,7 +95,7 @@ def test_train_transform_p_jpeg(monkeypatch):
     img = np.zeros((224, 224, 3), np.uint8)
     for p, want in ((0.0, False), (1.0, True)):
         n.clear()
-        x, j = train_transform(img, np.random.default_rng(0), p, 95)
+        x, j, _ = train_transform(img, np.random.default_rng(0), p, 95)
         assert j is want and x.shape == (3, 224, 224) and len(n) == int(want)
     assert n == [95]
 
@@ -115,3 +116,102 @@ def test_guard_train_allows_aug_not_test():
     for w in ("ffpp_test", "celebdf"):
         with pytest.raises(LeakageError):
             allow_read("train", w)
+
+
+# ---- arm filt/loc, nhãn patch (Task 2) ----
+G = 16
+
+
+def _pool(mask_path, g=G):
+    m = (io_utils.read_image(mask_path).max(axis=2) > 0).astype(np.float32)
+    c = m.shape[0] // g
+    return m.reshape(g, c, g, c).mean(axis=(1, 3))
+
+
+def _loc(data_root, seed=0):
+    return TrainList(data_root, "raw_aug_filt_loc", seed, 0.0, 95, grid=G)
+
+
+def test_old_arms_unchanged(data_root):
+    for arm in ("raw", "raw_aug"):
+        t = TrainList(data_root, arm, 0, 0.5, 95)
+        assert list(t.items.columns) == ["path", "label", "source", "video_id"] and t.aug_stats == {}
+        assert set(t[0]) == {"image", "label", "source", "jpeg"}
+        assert set(t[len(t) - 1]) == {"image", "label", "source", "jpeg"}
+
+
+def test_filt_arm_applies_filter(data_root):
+    t = TrainList(data_root, "raw_aug_filt", 0, 0.5, 95)
+    assert "mask_path" in t.items.columns and set(t[0]) == {"image", "label", "source", "jpeg"}
+    st = t.aug_stats
+    assert st["tau_m"] == pytest.approx(0.05) and st["n_rep_kept"] > 0 and st["n_seam_after"] > 0
+    aug = aug_frames(data_root).set_index("path")
+    a = t.items[t.items.source != "raw"]
+    assert len(a) == st["n_rep_after"] + st["n_seam_after"]
+    assert (aug.loc[a.path, "r"] >= 0.75).all() and (aug.loc[a.path, "mask_frac_final"] >= st["tau_m"]).all()
+    assert t.items[t.items.source != "rep"].mask_path.isna().all()
+
+
+def test_loc_item_targets(data_root):
+    t = _loc(data_root)
+    seen = set()
+    for i in range(len(t)):
+        it, row = t[i], t.items.iloc[i]
+        assert it["patch_target"].shape == (G, G) and it["patch_target"].dtype == torch.float32
+        if row.source == "rep":
+            assert it["has_loc"] is True and (it["patch_target"] > 0).any()
+            assert it["patch_target"].sum().item() == pytest.approx(
+                (io_utils.read_image(row.mask_path).max(axis=2) > 0).mean() * G * G, abs=1e-3)
+        elif row.source == "seam" or row.label == 0:
+            assert it["has_loc"] is True and not it["patch_target"].any()
+        else:
+            assert it["has_loc"] is False and not it["patch_target"].any()
+        seen.add((row.source, int(row.label), it["has_loc"]))
+    assert seen == {("rep", 1, True), ("seam", 0, True), ("raw", 0, True), ("raw", 1, False)}
+
+
+def test_loc_mask_flipped_with_image(data_root):
+    t = _loc(data_root)
+    i = int(t.items.index[t.items.source == "rep"][0])
+    got = {}
+    for seed in range(40):  # tìm seed cho cả hai hướng lật, đối chiếu ảnh để biết đã lật hay chưa
+        tt = _loc(data_root, seed)
+        it = tt[i]
+        raw = eval_transform(io_utils.read_image(tt._paths[i]))
+        flipped = not torch.equal(it["image"], raw)
+        got[flipped] = (it["patch_target"], _pool(tt.items.mask_path[i]))
+        if len(got) == 2:
+            break
+    assert set(got) == {True, False}
+    assert not np.array_equal(got[True][1], np.fliplr(got[True][1]))  # mask bất đối xứng, test có nghĩa
+    assert torch.equal(got[True][0], torch.from_numpy(np.fliplr(got[True][1]).copy()))
+    assert torch.equal(got[False][0], torch.from_numpy(got[False][1]))
+
+
+def test_loc_missing_mask_fails_early(data_root, tmp_path):
+    root = _copy(data_root, tmp_path / "r")
+    kept = _loc(root).items
+    victim = Path(kept[kept.source == "rep"].mask_path.iloc[0])
+    victim.unlink()
+    with pytest.raises(FileNotFoundError, match=victim.name):
+        _loc(root)
+    TrainList(root, "raw_aug_filt", 0, 0.0, 95)  # arm không loc không đọc mask
+
+
+def test_loc_grid_not_divisible(data_root):
+    t = TrainList(data_root, "raw_aug_filt_loc", 0, 0.0, 95, grid=15)
+    i = int(t.items.index[t.items.source == "rep"][0])
+    with pytest.raises(ValueError):
+        t[i]
+
+
+def test_train_transform_rng_unchanged():
+    img = np.random.default_rng(1).integers(0, 255, (224, 224, 3), dtype=np.uint8)
+    for seed in range(6):
+        ref = np.random.default_rng(seed)
+        did = bool(ref.random() < 0.5)
+        want = io_utils.jpeg(img, 95) if did else img
+        flip = ref.random() < 0.5
+        want = eval_transform(want[:, ::-1] if flip else want)
+        x, j, f = train_transform(img, np.random.default_rng(seed), 0.5, 95)
+        assert j is did and f is bool(flip) and torch.equal(x, want)

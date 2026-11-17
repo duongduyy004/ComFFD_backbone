@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ..config import ARMS, FILTER_ARMS, LOC_ARMS
 from ..io_utils import item_seed
 
 FILTER_MIN_R = 0.75
@@ -17,16 +18,20 @@ LOC_LAMBDA = 1.0
 
 def arm_constants(arm: str) -> dict:
     """Hằng số gắn arm (không nằm trong TrainConfig). Arm cũ -> {}."""
-    if arm in ("raw_aug_filt", "raw_aug_filt_loc"):
-        c = {"filter_min_r": FILTER_MIN_R, "filter_mask": "median_rep"}
-        if arm == "raw_aug_filt_loc":
-            c["loc_lambda"] = LOC_LAMBDA
-        return c
-    return {}
+    if arm not in ARMS:
+        raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
+    if arm not in FILTER_ARMS:
+        return {}
+    c = {"filter_min_r": FILTER_MIN_R, "filter_mask": "median_rep"}
+    if arm in LOC_ARMS:
+        c["loc_lambda"] = LOC_LAMBDA
+    return c
 
 
 def filter_aug(aug: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Lọc ảnh aug. Trả (aug đã giữ, stats). Rep hoặc seam rỗng sau lọc -> ValueError."""
+    if aug[["r", "mask_frac_final"]].isna().any().any():
+        raise ValueError("filter_aug: r hoặc mask_frac_final có NaN")
     rep = aug.kind == "rep"
     n_rep, n_seam = int(rep.sum()), int((~rep).sum())
     if not n_rep:
@@ -69,4 +74,6 @@ def balance_aug(aug: pd.DataFrame, n_real: int, n_fake: int) -> tuple[pd.DataFra
         drop_idx = sorted(idx, key=key)[:max(0, total - keep_n)]
         out = aug.drop(index=drop_idx).reset_index(drop=True)
         n_s, n_p = int((out.kind == "seam").sum()), int((out.kind == "rep").sum())
+    if not n_s or not n_p:
+        raise ValueError(f"balance_aug: sau cân bằng còn rep={n_p}, seam={n_s} (R={R}, F={F}, S={S}, P={P})")
     return out, {"n_rep_after": n_p, "n_seam_after": n_s, "p_real": p_real, "p_fake": p_fake}

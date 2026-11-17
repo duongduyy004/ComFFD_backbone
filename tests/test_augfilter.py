@@ -85,3 +85,24 @@ def test_aug_frames_columns(data_root):
     for c in ("method", "r", "mask_frac_final", "mask_path"):
         assert c in df.columns
     assert all(p.exists() for p in df.mask_path) and all(p.is_absolute() for p in df.mask_path)
+
+
+def test_balance_empty_side_raises():
+    with pytest.raises(ValueError):  # R rất nhỏ -> seam giữ 0
+        balance_aug(make_aug_counts(seam=5, rep=30), n_real=1, n_fake=100)
+    with pytest.raises(ValueError):  # rep giữ 0
+        balance_aug(make_aug_counts(seam=1, rep=30), n_real=100, n_fake=1)
+
+
+def test_arm_constants_unknown_arm_raises():
+    with pytest.raises(ValueError):
+        arm_constants("raw_aug_filt_typo")
+
+
+def test_filter_nan_raises():
+    aug = make_aug(rep_r=[1.0, 1.0], rep_m=[0.05, float("nan")], seam_r=[1.0], seam_m=[0.05])
+    with pytest.raises(ValueError, match="NaN"):
+        filter_aug(aug)
+    aug = make_aug(rep_r=[1.0, float("nan")], rep_m=[0.05, 0.05], seam_r=[1.0], seam_m=[0.05])
+    with pytest.raises(ValueError, match="NaN"):
+        filter_aug(aug)

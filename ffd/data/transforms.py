@@ -25,15 +25,16 @@ def _to_tensor(img_bgr: np.ndarray) -> torch.Tensor:
 
 
 def train_transform(img_bgr: np.ndarray, rng: np.random.Generator, p_jpeg: float,
-                    q: int) -> tuple[torch.Tensor, bool]:
-    """JPEG chất lượng q với xác suất p_jpeg, rồi lật ngang p=0.5. Trả (Tensor 3x224x224, đã JPEG?).
+                    q: int) -> tuple[torch.Tensor, bool, bool]:
+    """JPEG chất lượng q với xác suất p_jpeg, rồi lật ngang p=0.5. Trả (Tensor 3x224x224, đã JPEG?, đã lật?).
     Luôn bốc rng.random() cho JPEG để chuỗi ngẫu nhiên không phụ thuộc p_jpeg."""
     did = bool(rng.random() < p_jpeg)
     if did:
         img_bgr = _io.jpeg(img_bgr, q)
-    if rng.random() < 0.5:
+    flipped = bool(rng.random() < 0.5)
+    if flipped:
         img_bgr = img_bgr[:, ::-1]
-    return _to_tensor(img_bgr), did
+    return _to_tensor(img_bgr), did, flipped
 
 
 def eval_transform(img_bgr: np.ndarray) -> torch.Tensor:
