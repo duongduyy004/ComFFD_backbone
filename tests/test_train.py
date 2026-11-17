@@ -250,3 +250,13 @@ def test_resume_refuses_changed_arm_constants(cfg_tiny_loc, tiny, monkeypatch):
     monkeypatch.setattr(AF, "LOC_LAMBDA", 2.0)
     with pytest.raises(ValueError, match="hằng số arm"):
         run(cfg_tiny_loc, tiny, resume=True)
+
+
+def test_resume_refuses_missing_arm_constants(cfg_tiny_loc, tiny):
+    d = run(cfg_tiny_loc, tiny)
+    p = d / "run_info.json"
+    info = json.loads(p.read_text(encoding="utf-8"))
+    del info["arm_constants"]
+    p.write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="hằng số arm"):
+        run(cfg_tiny_loc, tiny, resume=True)

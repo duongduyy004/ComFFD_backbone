@@ -227,8 +227,8 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         info = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
         if info.get("model_commit") != commit:
             raise ValueError(f"model_commit khác run cũ ({info.get('model_commit')} != {commit}); không resume")
-        if "arm_constants" in info and info["arm_constants"] != consts:
-            raise ValueError(f"hằng số arm khác run cũ ({info['arm_constants']} != {consts}); không resume")
+        if cfg.arm in FILTER_ARMS and info.get("arm_constants") != consts:
+            raise ValueError(f"hằng số arm khác run cũ ({info.get('arm_constants')} != {consts}); không resume")
 
     ds = TrainList(cfg.data_root, cfg.arm, cfg.seed, cfg.p_jpeg, cfg.jpeg_q, grid=model.grid)  # tự gọi allow_read train/aug
     if not resume:  # ghi sau khi dựng model (commit HF đã resolve) và TrainList (aug_stats)
@@ -324,7 +324,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             "frac_real": float(np.mean(labels == 0)), "frac_rep": float(np.mean(sources == "rep")),
             "frac_seam": float(np.mean(sources == "seam")), "frac_jpeg": n_jpeg / n,
             "seconds": time.perf_counter() - t0,
-            **({"train_loc_loss": loc_sum / n_sup if n_sup else 0.0} if use_loc else {})})
+            **({"train_loc_loss": loc_sum / n_sup} if use_loc and n_sup else {})})
         _atomic_save({"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
                       "scheduler": sched.state_dict(), "rng": _rng_state(), "epoch": epoch, "step": step,
                       "best": best, "best_state": best_state, "bad_epochs": bad}, d / "last.pt")
