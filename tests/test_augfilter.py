@@ -39,6 +39,8 @@ def test_balance_integer_rule():  # R=96, F=480, S=57, P=195 -> giữ 39 seam, b
     assert st["n_seam_after"] == 39 and st["n_rep_after"] == 195
     assert (kept.kind == "seam").sum() == 39 and (kept.kind == "rep").sum() == 195
     assert st["p_real"] == pytest.approx(57 / (96 + 57)) and st["p_fake"] == pytest.approx(195 / (480 + 195))
+    assert st["n_real"] == 96 and st["n_fake"] == 480
+    assert st["p_real_after"] == pytest.approx(39 / 135) and st["p_fake_after"] == pytest.approx(195 / 675)
 
 
 def test_balance_rep_side():  # p_fake > p_real: R=10, F=10, S=5, P=30 -> giữ rep S*F//R = 5

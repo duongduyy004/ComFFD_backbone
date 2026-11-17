@@ -17,7 +17,7 @@ Quy ước:
 - Cột `seconds` = thời gian thực của epoch (train + val). `frac_real` = tỉ lệ ảnh nhãn 0 trong epoch;
   `frac_rep`/`frac_seam` = tỉ lệ ảnh nguồn rep/seam; `frac_jpeg` = tỉ lệ ảnh đã nén JPEG.
 - Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. bf16 autocast trên CUDA.
-Arm loc: loss = BCE_cls + loc_lambda * L_loc; cột `train_loc_loss` = L_loc trung bình theo ảnh có giám sát (arm khác
+Arm loc: loss tối ưu = BCE_cls + loc_lambda * L_loc, nhưng `train_loss` luôn log BCE_cls (như các arm khác); cột `train_loc_loss` = L_loc trung bình theo ảnh có giám sát (arm khác
   để trống). Resume với hằng số arm khác run_info -> ValueError.
 Trạng thái: chưa chạy thử trên GPU (chỉ test CPU với CLIP tí hon ngẫu nhiên).
 """
@@ -274,7 +274,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         batches = epoch_batches(n, cfg.batch_size, cfg.seed, epoch)
         loader = torch.utils.data.DataLoader(ds, batch_sampler=batches,
                                              **loader_kwargs(cfg.num_workers, device, cfg.seed))
-        loss_sum, n_jpeg = 0.0, 0
+        loss_sum, n_jpeg = 0.0, 0  # loss_sum: chỉ BCE_cls (không gồm λ·L_loc)
         loc_sum, n_sup = 0.0, 0  # L_loc theo ảnh có giám sát (không theo batch)
         pb = progress.bar(loader, total=len(batches), desc=f"train {name} e{epoch}/{cfg.max_epochs}", unit="batch")
         for bi, batch in enumerate(pb):
@@ -283,6 +283,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             with _autocast(device):
                 out = model(x)
                 loss, _ = model.head.loss(out, {"L0": y})
+                cls_loss = loss
                 if use_loc:
                     has = batch["has_loc"].to(device)
                     l_loc = loc_loss(out["patch_logit"], batch["patch_target"].to(device), has)
@@ -300,13 +301,13 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             sched.step()
             opt.zero_grad(set_to_none=True)
             step += 1
-            loss_sum += float(loss.detach()) * len(x)
+            loss_sum += float(cls_loss.detach()) * len(x)
             if use_loc:
                 k = int(has.sum())
                 loc_sum += float(l_loc.detach()) * k
                 n_sup += k
             n_jpeg += int(batch["jpeg"].sum())
-            pb.set_postfix(loss=f"{float(loss.detach()):.4f}")
+            pb.set_postfix(loss=f"{float(cls_loss.detach()):.4f}")
         pb.close()
 
         m = _validate(model, val_df, cfg, device)

@@ -83,4 +83,7 @@ def balance_aug(aug: pd.DataFrame, n_real: int, n_fake: int) -> tuple[pd.DataFra
         n_s, n_p = int((out.kind == "seam").sum()), int((out.kind == "rep").sum())
     if not n_s or not n_p:
         raise ValueError(f"balance_aug: sau cân bằng còn rep={n_p}, seam={n_s} (R={R}, F={F}, S={S}, P={P})")
-    return out, {"n_rep_after": n_p, "n_seam_after": n_s, "p_real": p_real, "p_fake": p_fake}
+    return out, {"n_rep_after": n_p, "n_seam_after": n_s, "p_real": p_real, "p_fake": p_fake,
+                 "n_real": R, "n_fake": F,
+                 "p_real_after": n_s / (R + n_s) if (R + n_s) else 0.0,
+                 "p_fake_after": n_p / (F + n_p) if (F + n_p) else 0.0}

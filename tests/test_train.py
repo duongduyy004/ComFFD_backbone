@@ -243,6 +243,14 @@ def test_train_log_cols_old_arm(cfg_tiny, tiny):
     assert "arm_constants" not in info and "aug_stats" not in info  # run_info arm cũ không đổi cấu trúc
 
 
+def test_train_loss_is_cls_bce_only_in_loc_arm(cfg_tiny_loc, tiny, monkeypatch):
+    # L_loc giả = 50 (còn grad): nếu train_loss lẫn λ·L_loc (λ=1) thì >= 50; BCE_cls của CLIP tí hon xấp xỉ 0.7
+    monkeypatch.setattr(T, "loc_loss", lambda logit, target, has: logit.sum() * 0 + 50.0)
+    d = run(cfg_tiny_loc, tiny)
+    log = pd.read_csv(d / "train_log.csv")
+    assert (log.train_loss < 5).all() and np.allclose(log.train_loc_loss, 50.0)
+
+
 def test_resume_refuses_changed_arm_constants(cfg_tiny_loc, tiny, monkeypatch):
     import ffd.data.augfilter as AF
 

@@ -76,11 +76,11 @@ Hằng số gắn arm nằm trong code (`ffd/data/augfilter.py`), **không** ph�
   (lật ảnh thì lật cả mask). Ảnh có giám sát: `rep` (nhãn từ mask), `seam` và real raw (toàn 0); fake raw không có.
   Batch không có ảnh giám sát -> `L_loc = 0`.
 - **Cần mask trên máy train:** arm `raw_aug_filt_loc` đọc mask của ảnh `rep` -> phải chép
-  `<data_root>/ffpp/aug/train/masks/` lên SSD cùng với `aug/train` trước khi chạy. Thiếu file mask của một dòng `rep`
+  `<data_root>/ffpp/aug/train/masks/` lên SSD cùng với `aug/train` trước khi chạy. Mask không nằm trong `data_hashes` (chỉ kiểm tra tồn tại), nên chép nguyên thư mục (vd. `robocopy /E`) và không sửa nó. Thiếu file mask của một dòng `rep`
   đã lọc -> `FileNotFoundError` nêu đường dẫn ngay lúc dựng tập train (không lỗi giữa epoch). Test và eval không dùng mask.
-- Cột `train_loc_loss` trong `train_log.csv`: `L_loc` trung bình theo ảnh có giám sát của epoch (chỉ arm `_loc`; arm khác để trống).
+- Cột `train_loss` luôn là BCE_cls trung bình (mọi arm; arm `_loc` tối ưu BCE_cls + λ·L_loc nhưng không log tổng). Cột `train_loc_loss` trong `train_log.csv`: `L_loc` trung bình theo ảnh có giám sát của epoch (chỉ arm `_loc`; arm khác để trống).
 - `run_info.json` của hai arm này có thêm `arm_constants` (`filter_min_r`, `filter_mask`, + `loc_lambda` ở arm loc) và
-  `aug_stats` (`tau_m`, số rep/seam trước/sau lọc và sau cân bằng, `p_real`, `p_fake`); `evaluate` chép cả hai vào
+  `aug_stats` (`tau_m`, số rep/seam trước/sau lọc và sau cân bằng, `n_real`, `n_fake` = R, F; `p_real`, `p_fake` = tỉ lệ seam/rep trước cân bằng; `p_real_after`, `p_fake_after` = sau cân bằng); `evaluate` chép cả hai vào
   `result.json`. Run `raw_aug_filt*` trên đĩa mà `arm_constants` thiếu hoặc khác hằng số hiện tại -> `ValueError` ở
   mọi đường (bỏ qua, eval lại, resume): xóa thư mục run hoặc đổi `ckpt_root`. Arm `raw`, `raw_aug` không đổi gì.
 
