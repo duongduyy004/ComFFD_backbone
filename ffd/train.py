@@ -40,7 +40,7 @@ import torch
 
 from . import metrics, progress
 from .config import FILTER_ARMS, LOC_ARMS, TrainConfig, run_name_of
-from .data.augfilter import arm_constants
+from .data.augfilter import arm_constants, check_arm_constants
 from .data.ffpp import frames
 from .data.trainset import TrainList
 from .data.transforms import eval_transform
@@ -227,8 +227,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         info = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
         if info.get("model_commit") != commit:
             raise ValueError(f"model_commit khác run cũ ({info.get('model_commit')} != {commit}); không resume")
-        if cfg.arm in FILTER_ARMS and info.get("arm_constants") != consts:
-            raise ValueError(f"hằng số arm khác run cũ ({info.get('arm_constants')} != {consts}); không resume")
+        check_arm_constants(cfg.arm, info, "không resume")
 
     ds = TrainList(cfg.data_root, cfg.arm, cfg.seed, cfg.p_jpeg, cfg.jpeg_q, grid=model.grid)  # tự gọi allow_read train/aug
     if not resume:  # ghi sau khi dựng model (commit HF đã resolve) và TrainList (aug_stats)

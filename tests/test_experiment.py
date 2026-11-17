@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("torch")
 
 from ffd import experiment as X  # noqa: E402
-from ffd.config import TrainConfig  # noqa: E402
+from ffd.config import ARMS, TrainConfig  # noqa: E402
 from ffd.experiment import run_main  # noqa: E402
 
 
@@ -52,6 +52,20 @@ def _fake_compare(root):
     return p
 
 
+def _fake_pair(root, a, b):
+    """compare_<a>__<b>.json MINH HỌA."""
+    p = root / f"compare_{a}__{b}.json"
+    p.write_text(json.dumps({"ffpp_test": {f"auc_{a}": 0.8, f"auc_{b}": 0.9, "diff": 0.1,
+                                           "diff_ci95": [0.02, 0.18], "delong_p": 0.003},
+                             "celebdf": {"skipped": "lý do MINH HỌA"}, "note": "Exploratory"}))
+    return p
+
+
+def _patch_compare(monkeypatch):
+    monkeypatch.setattr(X, "compare_runs", _fake_compare)
+    monkeypatch.setattr(X, "compare_pair", _fake_pair)
+
+
 def _celeb(tmp_path):
     m = tmp_path / "data" / "celebdf" / "manifest.parquet"
     m.parent.mkdir(parents=True)
@@ -94,13 +108,13 @@ def test_ensure_run_rejects_other_config(monkeypatch, tmp_path):
 
 
 def test_main_uses_config_lr_pjpeg(monkeypatch, tmp_path, capsys):
-    """main train raw, raw_aug với đúng lr/p_jpeg của config (không pilot), gọi compare, ghi summary.md."""
+    """main train 4 arm với đúng lr/p_jpeg của config (không pilot), gọi compare, ghi summary.md."""
     calls = fake_runs(monkeypatch, {"raw": 0.8, "raw_aug": 0.85})
-    monkeypatch.setattr(X, "compare_runs", _fake_compare)
+    _patch_compare(monkeypatch)
     _celeb(tmp_path)
     assert run_main(_cfg(tmp_path, lr=3e-4, p_jpeg=0.2, arm="raw_aug")) == tmp_path / "ck" / "compare.json"
     trains = [c for c in calls if c[0] == "train"]
-    assert [(c[1], c[4], c[5], c[6]) for c in trains] == [("raw", 3e-4, 0.2, "raw"), ("raw_aug", 3e-4, 0.2, "raw_aug")]
+    assert [(c[1], c[4], c[5], c[6]) for c in trains] == [(a, 3e-4, 0.2, a) for a in ARMS]
     assert all(c[2] == ("val", "ffpp_test", "celebdf") for c in calls if c[0] == "eval")
     assert not (tmp_path / "ck" / "pilot").exists()
     md = (tmp_path / "ck" / "summary.md").read_text(encoding="utf-8")
@@ -126,7 +140,7 @@ def test_main_prints_settings_before_training(monkeypatch, tmp_path, capsys):
         return orig(cfg, **kw)
 
     monkeypatch.setattr(X, "train", spy)
-    monkeypatch.setattr(X, "compare_runs", _fake_compare)
+    _patch_compare(monkeypatch)
     _celeb(tmp_path)
     run_main(_cfg(tmp_path, lr=2e-4, grad_checkpointing=True))
     assert "Config hiệu lực" in seen[0] and "lr " in seen[0] and "0.0002" in seen[0]
@@ -166,3 +180,81 @@ def test_ensure_run_reevaluates_missing_dataset(monkeypatch, tmp_path):
     (d / "result.json").write_text(json.dumps({"val": {"auc": 0.7}}))
     X.ensure_run(_cfg(tmp_path), ("val", "ffpp_test"))
     assert calls == [("eval", "raw", ("val", "ffpp_test"))]
+
+
+def test_main_runs_four_arms(monkeypatch, tmp_path):
+    """ensure_run gọi đủ 4 arm theo thứ tự; raw/raw_aug đã có result.json -> bỏ qua (không train/eval)."""
+    calls = fake_runs(monkeypatch, {})
+    _patch_compare(monkeypatch)
+    _celeb(tmp_path)
+    for a in ("raw", "raw_aug"):
+        d = tmp_path / "ck" / a
+        d.mkdir(parents=True)
+        (d / "result.json").write_text(json.dumps({ds: _block(0.8) for ds in X.MAIN_DATASETS}))
+    run_main(_cfg(tmp_path))
+    assert [c[1] for c in calls if c[0] == "train"] == ["raw_aug_filt", "raw_aug_filt_loc"]
+    assert [c[1] for c in calls if c[0] == "eval"] == ["raw_aug_filt", "raw_aug_filt_loc"]
+    md = (tmp_path / "ck" / "summary.md").read_text(encoding="utf-8")
+    for a in ARMS:
+        assert f"| {a} | val |" in md
+
+
+def test_summary_has_four_arms(monkeypatch, tmp_path):
+    """summary.md: 12 dòng arm x dataset, 5 bảng so sánh (compare.json + 4 cặp), mỗi cặp có số của nó."""
+    fake_runs(monkeypatch, {})
+    _patch_compare(monkeypatch)
+    _celeb(tmp_path)
+    run_main(_cfg(tmp_path))
+    md = (tmp_path / "ck" / "summary.md").read_text(encoding="utf-8")
+    rows = [x for x in md.splitlines() if x.split("|")[1:2] and x.split("|")[1].strip() in ARMS
+            and x.split("|")[2].strip() in X.MAIN_DATASETS]
+    assert len(rows) == 12
+    assert md.count("## So sánh AUC") == 5
+    assert "| ffpp_test | 0.8000 | 0.8500 | +0.0500 |" in md  # compare.json (raw, raw_aug)
+    assert "| dataset | AUC raw | AUC raw_aug_filt |" in md and "| dataset | AUC raw_aug_filt | AUC raw_aug_filt_loc |" in md
+    assert md.count("| ffpp_test | 0.8000 | 0.9000 | +0.1000 | [+0.0200, +0.1800] | 0.003 |") == 4
+
+
+@pytest.mark.parametrize("arm", ["raw_aug_filt", "raw_aug_filt_loc"])
+@pytest.mark.parametrize("stage", ["result", "done", "last"])
+def test_arm_constants_mismatch_refuses(monkeypatch, tmp_path, arm, stage):
+    """Run arm filt trên đĩa có arm_constants khác (hoặc thiếu) -> ValueError ở cả đường bỏ qua, eval, resume."""
+    from ffd.config import config_hash
+    from ffd.data.augfilter import arm_constants
+
+    calls = fake_runs(monkeypatch, {})
+    cfg = _cfg(tmp_path, arm=arm, run_name=arm)
+    d = tmp_path / "ck" / arm
+    d.mkdir(parents=True)
+    bad = dict(arm_constants(arm), filter_min_r=0.5)
+    if arm == "raw_aug_filt_loc":
+        bad["loc_lambda"] = 0.5
+    mk = {"result": lambda: (d / "result.json").write_text(json.dumps({"val": _block(0.7)})),
+          "done": lambda: (d / "done.flag").write_text("{}"),
+          "last": lambda: (d / "last.pt").write_text("x")}[stage]
+    mk()
+    for info_consts in (bad, None):
+        info = {"config_hash": config_hash(cfg)}
+        if info_consts is not None:
+            info["arm_constants"] = info_consts
+        (d / "run_info.json").write_text(json.dumps(info))
+        with pytest.raises(ValueError, match="hằng số arm"):
+            X.ensure_run(cfg, ("val",))
+        assert calls == []
+    # đúng hằng số -> chạy bình thường
+    (d / "run_info.json").write_text(json.dumps({"config_hash": config_hash(cfg),
+                                                 "arm_constants": arm_constants(arm)}))
+    X.ensure_run(cfg, ("val",))
+
+
+def test_old_arm_ignores_constants_check(monkeypatch, tmp_path):
+    """raw/raw_aug: run_info không có arm_constants vẫn dùng được (hành vi cũ)."""
+    from ffd.config import config_hash
+
+    fake_runs(monkeypatch, {})
+    cfg = _cfg(tmp_path)
+    d = tmp_path / "ck" / "raw"
+    d.mkdir(parents=True)
+    (d / "run_info.json").write_text(json.dumps({"config_hash": config_hash(cfg)}))
+    (d / "result.json").write_text(json.dumps({"val": _block(0.7)}))
+    assert X.ensure_run(cfg, ("val",))["val"]["auc"] == 0.7

@@ -76,9 +76,8 @@ def write_text_atomic(text: str, path: Path) -> None:
     atomic_write_bytes(Path(path), text.encode("utf-8"))
 
 
-# ---------------------------------------------------------------- tổng hợp main (raw, raw_aug + compare.json)
+# ---------------------------------------------------------------- tổng hợp main (4 arm + compare.json + 4 cặp)
 SUMMARY_HEAD = ["arm", "dataset", "ACC", "AUC", "PREC", "RECALL", "F1"]
-COMPARE_HEAD = ["dataset", "AUC raw", "AUC raw_aug", "diff", "CI95", "p DeLong"]
 
 
 def summary_rows(results: dict) -> list:
@@ -94,7 +93,12 @@ def summary_rows(results: dict) -> list:
     return rows
 
 
-def compare_rows(comp: dict) -> list:
+def compare_head(a: str = "raw", b: str = "raw_aug") -> list[str]:
+    return ["dataset", f"AUC {a}", f"AUC {b}", "diff", "CI95", "p DeLong"]
+
+
+def compare_rows(comp: dict, a: str = "raw", b: str = "raw_aug") -> list:
+    """Dòng so sánh AUC của cặp (a, b) từ compare.json / compare_<a>__<b>.json; diff = AUC(b) - AUC(a)."""
     rows = []
     for ds in COMPARE_DATASETS:
         v = comp.get(ds)
@@ -103,20 +107,31 @@ def compare_rows(comp: dict) -> list:
             rows.append([ds, f"skipped: {sk or 'không có'}", "", "", "", ""])
             continue
         lo, hi = v["diff_ci95"]
-        rows.append([ds, f4(v["auc_raw"]), f4(v["auc_raw_aug"]), f"{float(v['diff']):+.4f}",
+        rows.append([ds, f4(v[f"auc_{a}"]), f4(v[f"auc_{b}"]), f"{float(v['diff']):+.4f}",
                      f"[{float(lo):+.4f}, {float(hi):+.4f}]", f"{float(v['delong_p']):.4g}"])
     return rows
 
 
-def summary_text(results: dict, comp: dict) -> str:
-    return (fixed(SUMMARY_HEAD, summary_rows(results)) + "\n\n" + fixed(COMPARE_HEAD, compare_rows(comp))
-            + (f"\n\n{comp['note']}" if comp.get("note") else ""))
+def _all_compares(comp: dict, pairs: dict | None) -> list:
+    """[(a, b, nội dung)]: compare.json (raw, raw_aug) rồi các cặp có file (`pairs` = {(a, b): nội dung})."""
+    return [("raw", "raw_aug", comp), *((a, b, c) for (a, b), c in (pairs or {}).items())]
 
 
-def summary_markdown(results: dict, comp: dict) -> str:
-    parts = ["# Tổng hợp main (raw vs raw_aug)", "", "## Chỉ số từng arm (best.pt, ngưỡng logit >= 0)", "",
-             md(SUMMARY_HEAD, summary_rows(results)), "",
-             "## So sánh AUC (raw_aug - raw, từ compare.json)", "", md(COMPARE_HEAD, compare_rows(comp))]
+def summary_text(results: dict, comp: dict, pairs: dict | None = None) -> str:
+    parts = [fixed(SUMMARY_HEAD, summary_rows(results))]
+    for a, b, c in _all_compares(comp, pairs):
+        parts.append(f"{b} - {a}\n" + fixed(compare_head(a, b), compare_rows(c, a, b)))
+    if comp.get("note"):
+        parts.append(comp["note"])
+    return "\n\n".join(parts)
+
+
+def summary_markdown(results: dict, comp: dict, pairs: dict | None = None) -> str:
+    parts = ["# Tổng hợp main (4 arm)", "", "## Chỉ số từng arm (best.pt, ngưỡng logit >= 0)", "",
+             md(SUMMARY_HEAD, summary_rows(results))]
+    for a, b, c in _all_compares(comp, pairs):
+        src = "compare.json" if (a, b) == ("raw", "raw_aug") and c is comp else f"compare_{a}__{b}.json"
+        parts += ["", f"## So sánh AUC ({b} - {a}, từ {src})", "", md(compare_head(a, b), compare_rows(c, a, b))]
     if comp.get("note"):
         parts += ["", comp["note"]]
     return "\n".join(parts) + "\n"

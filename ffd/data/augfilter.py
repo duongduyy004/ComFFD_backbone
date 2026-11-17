@@ -28,6 +28,13 @@ def arm_constants(arm: str) -> dict:
     return c
 
 
+def check_arm_constants(arm: str, info: dict, action: str) -> None:
+    """Arm filt: run_info.json phải có `arm_constants` đúng bằng hằng số hiện tại, nếu không ValueError.
+    Dùng chung cho resume (train) và bỏ qua/eval lại (experiment.ensure_run). Arm cũ: không kiểm."""
+    if arm in FILTER_ARMS and info.get("arm_constants") != arm_constants(arm):
+        raise ValueError(f"hằng số arm khác run cũ ({info.get('arm_constants')} != {arm_constants(arm)}); {action}")
+
+
 def filter_aug(aug: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Lọc ảnh aug. Trả (aug đã giữ, stats). Rep hoặc seam rỗng sau lọc -> ValueError."""
     if aug[["r", "mask_frac_final"]].isna().any().any():

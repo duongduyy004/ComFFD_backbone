@@ -10,6 +10,7 @@ Quy ước:
 - scores_{dataset}.parquet: video_id, frame_idx, label, method, logit (dataset ∈ val, ffpp_test, celebdf).
 - Dataset không nằm trong `datasets` -> không có khóa trong result.json; celebdf thiếu dữ liệu ->
   {"skipped": "không có <data_root>/celebdf/manifest.parquet"}.
+- run_info có `arm_constants` / `aug_stats` (arm filt) -> chép nguyên vào result.json.
 - result.md ghi nguyên tử TRƯỚC result.json (có result.json thì đã có result.md).
 Trạng thái: chưa chạy thử trên GPU.
 """
@@ -114,6 +115,9 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
         "best_epoch": int(done["best_epoch"]), "epochs_run": int(done["epochs_run"]),
         "stopped_early": bool(done["stopped_early"]), "total_steps": int(done["total_steps"]),
     }
+    for k in ("arm_constants", "aug_stats"):  # arm filt: ghi lại hằng số và thống kê lọc của lúc train
+        if k in info:
+            res[k] = info[k]
     for ds in datasets:
         if ds == "celebdf" and not celeb_ok:
             res[ds] = {"skipped": f"không có {cfg.data_root}/celebdf/manifest.parquet"}

@@ -1,8 +1,10 @@
-# ffd — detector CLIP ViT-L/14 (224) + LoRA (CompFFD, v2)
+# ffd — detector CLIP ViT-L/14 (224) + LoRA (CompFFD, v3)
 
-So sánh hai arm huấn luyện trên FF++: `raw` (ảnh raw train) và `raw_aug` (raw train + mọi ảnh tăng cường `rep`/`seam`
-của preprocessing). Đánh giá mức frame trên FF++ val, FF++ test và Celeb-DF.
-Trạng thái: code v2 mới chạy test CPU (CLIP tí hon, dữ liệu tổng hợp MINH HỌA); **chưa chạy thử trên GPU**.
+So sánh bốn arm huấn luyện trên FF++ (thứ tự cố định, arm mới thêm sau): `raw` (ảnh raw train), `raw_aug` (raw train +
+mọi ảnh tăng cường `rep`/`seam` của preprocessing), `raw_aug_filt` (như `raw_aug` nhưng lọc `rep`/`seam` yếu rồi cân bằng
+lại seam, xem mục "Hai arm v3") và `raw_aug_filt_loc` (như `raw_aug_filt` + head dự đoán vị trí, loss `L_loc`).
+Đánh giá mức frame trên FF++ val, FF++ test và Celeb-DF. Spec: `../spec_v3_loc_filter_2026-11-17.md` mục 4.4.
+Trạng thái: code mới chạy test CPU (CLIP tí hon, dữ liệu tổng hợp MINH HỌA); **chưa chạy thử trên GPU**.
 
 ## Cài đặt
 
@@ -61,6 +63,27 @@ python -m pytest -q                                                             
 $env:FFD_REAL_CONFIG = "config.yaml"; python -m pytest -q --run-gpu tests/test_smoke_gpu.py   # máy GPU, dữ liệu thật
 ```
 
+## Hai arm v3: `raw_aug_filt`, `raw_aug_filt_loc`
+
+Hằng số gắn arm nằm trong code (`ffd/data/augfilter.py`), **không** phải khóa `TrainConfig`:
+
+- **Quy tắc lọc** (cùng cho `rep` và `seam`): giữ dòng có `r >= 0.75` và `mask_frac_final >= τ_m`, với `τ_m` = median
+  `mask_frac_final` của **mọi dòng `rep` chưa lọc** (toàn cục). Lọc làm rỗng `rep` hoặc `seam` -> lỗi rõ ràng.
+- **Cân bằng lại** sau lọc: `p_real = S/(R+S)` so với `p_fake = P/(F+P)` (R, F = số ảnh raw train nhãn 0/1; S, P =
+  số seam/rep sau lọc); bên lớn hơn bị bớt, bỏ theo khóa xác định (SHA-1 `item_seed`, cùng preprocessing).
+- **`raw_aug_filt_loc`**: thêm head vị trí trên patch token; `loss = BCE_cls + λ · L_loc`, **λ = 1.0**. `L_loc` = trung
+  bình theo ảnh của BCE nhãn mềm trên lưới `image_size // patch_size`; nhãn mềm = tỉ lệ pixel mask trong mỗi ô patch
+  (lật ảnh thì lật cả mask). Ảnh có giám sát: `rep` (nhãn từ mask), `seam` và real raw (toàn 0); fake raw không có.
+  Batch không có ảnh giám sát -> `L_loc = 0`.
+- **Cần mask trên máy train:** arm `raw_aug_filt_loc` đọc mask của ảnh `rep` -> phải chép
+  `<data_root>/ffpp/aug/train/masks/` lên SSD cùng với `aug/train` trước khi chạy. Thiếu file mask của một dòng `rep`
+  đã lọc -> `FileNotFoundError` nêu đường dẫn ngay lúc dựng tập train (không lỗi giữa epoch). Test và eval không dùng mask.
+- Cột `train_loc_loss` trong `train_log.csv`: `L_loc` trung bình theo ảnh có giám sát của epoch (chỉ arm `_loc`; arm khác để trống).
+- `run_info.json` của hai arm này có thêm `arm_constants` (`filter_min_r`, `filter_mask`, + `loc_lambda` ở arm loc) và
+  `aug_stats` (`tau_m`, số rep/seam trước/sau lọc và sau cân bằng, `p_real`, `p_fake`); `evaluate` chép cả hai vào
+  `result.json`. Run `raw_aug_filt*` trên đĩa mà `arm_constants` thiếu hoặc khác hằng số hiện tại -> `ValueError` ở
+  mọi đường (bỏ qua, eval lại, resume): xóa thư mục run hoặc đổi `ckpt_root`. Arm `raw`, `raw_aug` không đổi gì.
+
 ## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
@@ -72,8 +95,9 @@ PowerShell, thư mục `detector/`, đã activate `.venv`.
    ```
    **Bắt buộc trước main:** chép `model_commit` in ra vào `model_revision` của `config.yaml` để ghim phiên bản
    model (`model_revision` vào `config_hash`; ghim sau khi main đã chạy sẽ làm run cũ báo lỗi config khác).
-2. **main**: train + eval `raw` và `raw_aug` với `lr`, `p_jpeg` lấy từ `config.yaml`, rồi so sánh (`compare.json`),
-   in bảng tổng hợp và ghi `checkpoints/clip/summary.md`. Thiếu `<data_root>/celebdf/manifest.parquet`
+2. **main**: train + eval cả 4 arm (`raw`, `raw_aug`, `raw_aug_filt`, `raw_aug_filt_loc`) với `lr`, `p_jpeg` lấy từ
+   `config.yaml`; arm đã có `result.json` thì bỏ qua (nên chỉ chạy thêm hai arm mới nếu `raw`/`raw_aug` đã xong). Rồi
+   so sánh (`compare.json` + 4 file `compare_<a>__<b>.json`), in bảng tổng hợp và ghi `checkpoints/clip/summary.md`. Thiếu `<data_root>/celebdf/manifest.parquet`
    (**phải tiền xử lý Celeb-DF trước main**) -> lỗi.
    ```powershell
    python -m ffd.cli main --config config.yaml --set num_workers=8
@@ -98,7 +122,7 @@ Lệnh lẻ (khi cần):
 ```powershell
 python -m ffd.cli train --config config.yaml --set arm=raw_aug [--resume | --force]   # một run; không dùng cả hai cờ
 python -m ffd.cli eval --run checkpoints/clip/raw [--datasets val,ffpp_test,celebdf] [--force] [--data-root <data_root trên máy này>]
-python -m ffd.cli compare --ckpt-root checkpoints/clip
+python -m ffd.cli compare --ckpt-root checkpoints/clip   # compare.json + mọi cặp có đủ hai run (cặp thiếu run: bỏ qua, có ghi chú)
 python -m ffd.cli diagnose --ckpt-root checkpoints/clip [--n 2000] [--num-workers 8]   # sau main
 ```
 
@@ -120,14 +144,15 @@ Run cũ có `run_name` bắt đầu bằng `pilot/` (tạo trước 16/11) chỉ
 ```
 checkpoints/clip/
   smoke/smoke.json, smoke/samples/{rep,seam}_00..15.png
-  raw/  raw_aug/          # run chính
-  compare.json
+  raw/  raw_aug/  raw_aug_filt/  raw_aug_filt_loc/   # run chính
+  compare.json                                      # raw_aug so với raw
+  compare_<a>__<b>.json                             # 4 cặp (xem dưới)
   summary.md              # bảng tổng hợp cuối main
 ```
 
 Mỗi thư mục run: `run_info.json` (config đầy đủ, `config_hash`, `model_commit`, phiên bản thư viện, sha256 dữ liệu),
 `train_log.csv` (mỗi epoch một dòng, cột: `epoch, step, train_loss, lr, val_auc_frame, val_bce, val_acc,
-val_precision, val_recall, val_f1, frac_real, frac_rep, frac_seam, frac_jpeg, seconds`; chỉ số val ngưỡng logit >= 0,
+val_precision, val_recall, val_f1, frac_real, frac_rep, frac_seam, frac_jpeg, seconds, train_loc_loss`; chỉ số val ngưỡng logit >= 0,
 chỉ để theo dõi; log cũ 11 cột khi resume được ghi lại với header mới, ô thiếu để trống), `last.pt` (để resume),
 `best.pt` (epoch tốt nhất theo AUC frame val, hòa trong 1e-4 thì BCE val thấp hơn), `done.flag` (`epochs_run`,
 `best_epoch`, `stopped_early` = dừng vì patience trước `max_epochs`, `total_steps`),
@@ -138,7 +163,7 @@ AUC theo method).
 ## `result.json` (một run, chấm `best.pt`)
 
 - `arm`, `config` (model, commit, `lr`, `p_jpeg`, `max_epochs`, `patience`, LoRA, sha256 dữ liệu), `best_epoch`,
-  `epochs_run`, `stopped_early`, `total_steps`.
+  `epochs_run`, `stopped_early`, `total_steps`; arm `raw_aug_filt*` thêm `arm_constants`, `aug_stats` (chép từ `run_info.json`).
 - Mỗi dataset (`val`, `ffpp_test`, `celebdf`): `auc` (AUC frame, lớp dương = fake), `auc_ci95`
   (bootstrap 2000 lần trên frame, seed 0), `acc`, `f1`, `recall`, `precision`, `confusion_matrix` (ngưỡng xác suất
   0.5), `n_frames`, `n_videos`, `n_videos_dropped` (video bị preprocessing loại hẳn theo `drops.parquet`; không tính video lỗi khi
@@ -152,13 +177,21 @@ AUC theo method).
   2000 lần trên frame, seed 0), `delong_p` (DeLong ghép cặp). Hai arm phải chấm cùng tập frame và nhãn.
 - `total_steps`, `epochs_run`, `best_epoch` của từng arm; `note`.
 
-`summary.md` (cuối `main`, cũng in ra stdout): mỗi (arm, dataset) một dòng ACC, AUC, PREC, RECALL, F1; rồi với
-`ffpp_test`, `celebdf`: AUC raw, AUC raw_aug, hiệu, CI95, p DeLong (lấy từ `compare.json`).
+## `compare_<a>__<b>.json` (bốn cặp v3)
+
+Cùng định dạng và cách tính với `compare.json` (ghép cặp theo frame, bootstrap seed 0, DeLong), nhưng khóa theo tên arm:
+`auc_<a>`, `auc_<b>`, `diff` = AUC(b) − AUC(a), `diff_ci95`, `delong_p`; `total_steps`, `epochs_run`, `best_epoch`
+theo từng arm; `note`. Bốn cặp (`compare.PAIRS`): `raw__raw_aug_filt`, `raw__raw_aug_filt_loc`,
+`raw_aug__raw_aug_filt`, `raw_aug_filt__raw_aug_filt_loc` (tên file: `compare_raw__raw_aug_filt.json`, ...).
+`compare.json` vẫn là (raw, raw_aug), không đổi định dạng.
+
+`summary.md` (cuối `main`, cũng in ra stdout): 4 arm × 3 dataset, mỗi dòng ACC, AUC, PREC, RECALL, F1; rồi 5 bảng so
+sánh (`compare.json` + 4 cặp) cho `ffpp_test`, `celebdf`: AUC hai arm, hiệu, CI95, p DeLong.
 
 ## Ghi chú Exploratory
 
-`compare.json` luôn ghi: *"Exploratory: 1 run/arm, không prereg; frame trong cùng video tương quan nên CI và p-value
-lạc quan."* Chạy 1 run/arm (seed 0) và không pre-register là **quyết định có chủ ý** của chủ đề tài ngày 15/11/2026
+Mọi file `compare*.json` luôn ghi: *"Exploratory: 1 run/arm, không prereg; frame trong cùng video tương quan nên CI và p-value
+lạc quan."* Hai arm v3 cũng vậy (1 run/arm, label exploratory). Chạy 1 run/arm (seed 0) và không pre-register là **quyết định có chủ ý** của chủ đề tài ngày 15/11/2026
 (ngoại lệ với nguyên tắc 4, 5 của project). Kết quả chỉ dùng để định hướng, không dùng làm claim.
 
 Chống leakage: `lr` chọn từ run thử trên FF++ val, epoch tốt nhất chỉ chọn trên FF++ val; FF++ test và Celeb-DF
