@@ -101,6 +101,16 @@ def _cmd_compare(a):
         raise SystemExit(f"Lỗi compare: {e}") from e
 
 
+def _cmd_diagnose(a):
+    from .diagnose import diagnose
+
+    try:
+        print(diagnose(a.ckpt_root, data_root=a.data_root, n_per_kind=a.n, batch_size=a.batch_size,
+                       num_workers=a.num_workers))
+    except (ValueError, FileNotFoundError) as e:
+        raise SystemExit(f"Lỗi diagnose: {e}") from e
+
+
 def _cmd_smoke(a):
     import json
 
@@ -147,6 +157,14 @@ def build_parser() -> argparse.ArgumentParser:
     c = sp.add_parser("compare", parents=[common], help="so sánh <ckpt_root>/raw và raw_aug -> compare.json")
     c.add_argument("--ckpt-root", required=True)
     c.set_defaults(fn=_cmd_compare)
+
+    g = sp.add_parser("diagnose", parents=[common], help="chẩn đoán raw_aug so với raw -> <ckpt_root>/diagnose/")
+    g.add_argument("--ckpt-root", required=True)
+    g.add_argument("--data-root", default=None, help="data_root trên máy này (mặc định: theo run_info)")
+    g.add_argument("--n", type=int, default=2000, help="số ảnh rep và seam lấy mẫu mỗi loại")
+    g.add_argument("--batch-size", type=int, default=128)
+    g.add_argument("--num-workers", type=int, default=8)
+    g.set_defaults(fn=_cmd_diagnose)
     return p
 
 
