@@ -59,6 +59,11 @@ class TrainList(Dataset):
                     for mp in df.mask_path[df.source == "rep"]:
                         if not Path(mp).is_file():
                             raise FileNotFoundError(f"thiếu mask của ảnh rep: {mp}")
+                    reps = df.mask_path[df.source == "rep"]
+                    if len(reps):  # đọc một mask: cạnh phải chia hết cho lưới (lỗi sớm, không giữa epoch)
+                        h, w = io_utils.read_image(Path(reps.iloc[0])).shape[:2]
+                        if h != w or h % int(grid):
+                            raise ValueError(f"mask {h}x{w} không chia hết cho lưới {grid} ({reps.iloc[0]})")
             parts.append(df)
         self.items = pd.concat(parts, ignore_index=True)
         self.arm, self.grid = arm, int(grid)

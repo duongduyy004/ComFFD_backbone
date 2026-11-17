@@ -17,6 +17,8 @@ Quy ước:
 - Cột `seconds` = thời gian thực của epoch (train + val). `frac_real` = tỉ lệ ảnh nhãn 0 trong epoch;
   `frac_rep`/`frac_seam` = tỉ lệ ảnh nguồn rep/seam; `frac_jpeg` = tỉ lệ ảnh đã nén JPEG.
 - Cần CUDA: không có CUDA và `allow_cpu=False` -> RuntimeError. bf16 autocast trên CUDA.
+Arm loc: loss = BCE_cls + loc_lambda * L_loc; cột `train_loc_loss` = L_loc trung bình theo ảnh có giám sát (arm khác
+  để trống). Resume với hằng số arm khác run_info -> ValueError.
 Trạng thái: chưa chạy thử trên GPU (chỉ test CPU với CLIP tí hon ngẫu nhiên).
 """
 from __future__ import annotations
@@ -37,19 +39,21 @@ import pandas as pd
 import torch
 
 from . import metrics, progress
-from .config import TrainConfig, run_name_of
+from .config import FILTER_ARMS, LOC_ARMS, TrainConfig, run_name_of
+from .data.augfilter import arm_constants
 from .data.ffpp import frames
 from .data.trainset import TrainList
 from .data.transforms import eval_transform
 from .guards import allow_read
 from .io_utils import read_image, write_json_atomic
+from .heads.loc import loc_loss
 from .model import Detector
 from .rundir import prepare_run_dir, write_run_info
 from .stats import auc
 
 LOG_COLS = ["epoch", "step", "train_loss", "lr", "val_auc_frame", "val_bce",
             "val_acc", "val_precision", "val_recall", "val_f1",
-            "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds"]
+            "frac_real", "frac_rep", "frac_seam", "frac_jpeg", "seconds", "train_loc_loss"]
 TOL = 1e-4
 
 
@@ -217,15 +221,22 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
     random.seed(cfg.seed)
     model = Detector(cfg, vision_config=vision_config).to(device)
     commit = model.trunk.commit
-    if not resume:  # ghi sau khi dựng model để có commit HF đã resolve
-        write_run_info(d, cfg, {"model_commit": commit})
-    else:
+    consts = arm_constants(cfg.arm)
+    if resume:
         p = d / "run_info.json"
         info = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
         if info.get("model_commit") != commit:
             raise ValueError(f"model_commit khác run cũ ({info.get('model_commit')} != {commit}); không resume")
+        if "arm_constants" in info and info["arm_constants"] != consts:
+            raise ValueError(f"hằng số arm khác run cũ ({info['arm_constants']} != {consts}); không resume")
 
-    ds = TrainList(cfg.data_root, cfg.arm, cfg.seed, cfg.p_jpeg, cfg.jpeg_q)  # tự gọi allow_read train/aug
+    ds = TrainList(cfg.data_root, cfg.arm, cfg.seed, cfg.p_jpeg, cfg.jpeg_q, grid=model.grid)  # tự gọi allow_read train/aug
+    if not resume:  # ghi sau khi dựng model (commit HF đã resolve) và TrainList (aug_stats)
+        extra = {"model_commit": commit}
+        if cfg.arm in FILTER_ARMS:  # arm cũ: run_info giữ nguyên cấu trúc
+            extra.update(arm_constants=consts, aug_stats=ds.aug_stats)
+        write_run_info(d, cfg, extra)
+    use_loc = cfg.arm in LOC_ARMS
     allow_read("train", "ffpp_val")
     val_df = frames(cfg.data_root, "ffpp", "val")
     labels = ds.items.label.to_numpy(int)
@@ -265,12 +276,18 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         loader = torch.utils.data.DataLoader(ds, batch_sampler=batches,
                                              **loader_kwargs(cfg.num_workers, device, cfg.seed))
         loss_sum, n_jpeg = 0.0, 0
+        loc_sum, n_sup = 0.0, 0  # L_loc theo ảnh có giám sát (không theo batch)
         pb = progress.bar(loader, total=len(batches), desc=f"train {name} e{epoch}/{cfg.max_epochs}", unit="batch")
         for bi, batch in enumerate(pb):
             x = batch["image"].to(device, non_blocking=True)
             y = batch["label"].to(device=device, dtype=torch.float32, non_blocking=True)
             with _autocast(device):
-                loss, _ = model.head.loss(model(x), {"L0": y})
+                out = model(x)
+                loss, _ = model.head.loss(out, {"L0": y})
+                if use_loc:
+                    has = batch["has_loc"].to(device)
+                    l_loc = loc_loss(out["patch_logit"], batch["patch_target"].to(device), has)
+                    loss = loss + consts["loc_lambda"] * l_loc
             if not torch.isfinite(loss):
                 err = {"epoch": epoch, "step": step + 1, "loss": float(loss.detach()),
                        "video_ids": sorted(set(vids[batches[bi]].tolist()))}
@@ -285,6 +302,10 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             opt.zero_grad(set_to_none=True)
             step += 1
             loss_sum += float(loss.detach()) * len(x)
+            if use_loc:
+                k = int(has.sum())
+                loc_sum += float(l_loc.detach()) * k
+                n_sup += k
             n_jpeg += int(batch["jpeg"].sum())
             pb.set_postfix(loss=f"{float(loss.detach()):.4f}")
         pb.close()
@@ -302,7 +323,8 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
             "val_precision": m["precision"], "val_recall": m["recall"], "val_f1": m["f1"],
             "frac_real": float(np.mean(labels == 0)), "frac_rep": float(np.mean(sources == "rep")),
             "frac_seam": float(np.mean(sources == "seam")), "frac_jpeg": n_jpeg / n,
-            "seconds": time.perf_counter() - t0})
+            "seconds": time.perf_counter() - t0,
+            **({"train_loc_loss": loc_sum / n_sup if n_sup else 0.0} if use_loc else {})})
         _atomic_save({"trainable": model.trainable_state_dict(), "optimizer": opt.state_dict(),
                       "scheduler": sched.state_dict(), "rng": _rng_state(), "epoch": epoch, "step": step,
                       "best": best, "best_state": best_state, "bad_epochs": bad}, d / "last.pt")

@@ -199,10 +199,9 @@ def test_loc_missing_mask_fails_early(data_root, tmp_path):
 
 
 def test_loc_grid_not_divisible(data_root):
-    t = TrainList(data_root, "raw_aug_filt_loc", 0, 0.0, 95, grid=15)
-    i = int(t.items.index[t.items.source == "rep"][0])
-    with pytest.raises(ValueError):
-        t[i]
+    with pytest.raises(ValueError, match="lưới"):  # lỗi lúc dựng, không phải giữa epoch
+        TrainList(data_root, "raw_aug_filt_loc", 0, 0.0, 95, grid=15)
+    TrainList(data_root, "raw_aug_filt", 0, 0.0, 95, grid=15)  # arm không loc không đọc mask
 
 
 def test_train_transform_rng_unchanged():

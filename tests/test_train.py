@@ -48,7 +48,8 @@ def test_train_writes_outputs(cfg_tiny, tiny):
     d = run(cfg_tiny, tiny)
     assert d == cfg_tiny.ckpt_root / "raw"
     log = pd.read_csv(d / "train_log.csv")
-    assert list(log.columns) == COLS and len(COLS) == 15
+    assert list(log.columns) == COLS + ["train_loc_loss"] and len(COLS) == 15  # cột mới ở cuối, arm raw để trống
+    assert log.train_loc_loss.isna().all()
     for c in ("val_auc_frame", "val_acc", "val_precision", "val_recall", "val_f1"):
         assert log[c].notna().all() and ((log[c] >= 0) & (log[c] <= 1)).all(), c
     done = json.loads((d / "done.flag").read_text())
@@ -149,7 +150,7 @@ def test_resume_with_old_11_col_log(cfg_tiny, tiny, monkeypatch, capsys):
     pd.read_csv(p)[OLD_COLS].to_csv(p, index=False)  # giả lập log định dạng cũ
     run(c, tiny, resume=True)
     log = pd.read_csv(p)
-    assert list(log.columns) == COLS and list(log.epoch) == [1, 2]
+    assert list(log.columns) == COLS + ["train_loc_loss"] and list(log.epoch) == [1, 2]
     assert log.loc[0, ["val_acc", "val_precision", "val_recall", "val_f1"]].isna().all()
     assert log.loc[1, ["val_acc", "val_precision", "val_recall", "val_f1"]].between(0, 1).all()
     err = capsys.readouterr().err
@@ -214,3 +215,38 @@ def test_train_with_spawn_worker(cfg_tiny, tiny):
     """Hồi quy spawn (Windows): DataLoader num_workers=1 phải pickle được dataset/worker_init_fn. 1 epoch, 1 bước."""
     d = run(dataclasses.replace(cfg_tiny, max_epochs=1, num_workers=1, batch_size=96), tiny)
     assert json.loads((d / "done.flag").read_text())["epochs_run"] == 1
+
+
+# ---- arm raw_aug_filt_loc (Task 3) ----
+@pytest.fixture
+def cfg_tiny_loc(cfg_tiny):
+    return dataclasses.replace(cfg_tiny, arm="raw_aug_filt_loc", max_epochs=1)
+
+
+def test_train_loc_arm_runs(cfg_tiny_loc, tiny):
+    d = run(cfg_tiny_loc, tiny)
+    log = pd.read_csv(d / "train_log.csv")
+    assert list(log.columns) == COLS + ["train_loc_loss"]
+    assert log.train_loc_loss.notna().all() and np.isfinite(log.train_loc_loss).all() and (log.train_loc_loss > 0).all()
+    best = torch.load(d / "best.pt", map_location="cpu", weights_only=False)
+    assert "loc_head.fc.weight" in best["trainable"]
+    info = json.loads((d / "run_info.json").read_text(encoding="utf-8"))
+    assert info["arm_constants"]["loc_lambda"] == 1.0 and "tau_m" in info["aug_stats"]
+
+
+def test_train_log_cols_old_arm(cfg_tiny, tiny):
+    d = run(dataclasses.replace(cfg_tiny, max_epochs=1), tiny)
+    raw = pd.read_csv(d / "train_log.csv", dtype=str, keep_default_na=False)
+    assert list(raw.columns) == COLS + ["train_loc_loss"] and (raw.train_loc_loss == "").all()
+    assert raw[COLS].ne("").all().all()
+    info = json.loads((d / "run_info.json").read_text(encoding="utf-8"))
+    assert "arm_constants" not in info and "aug_stats" not in info  # run_info arm cũ không đổi cấu trúc
+
+
+def test_resume_refuses_changed_arm_constants(cfg_tiny_loc, tiny, monkeypatch):
+    import ffd.data.augfilter as AF
+
+    run(cfg_tiny_loc, tiny)
+    monkeypatch.setattr(AF, "LOC_LAMBDA", 2.0)
+    with pytest.raises(ValueError, match="hằng số arm"):
+        run(cfg_tiny_loc, tiny, resume=True)
