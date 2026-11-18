@@ -91,9 +91,9 @@ bỏ seam thì real Celeb-DF có bớt bị đoán fake không. `arm_constants` 
 `n_seam_dropped`. Không có head loc. Không thuộc `ARMS` nên `main` không chạy; chạy riêng:
 
 ```
-python -m ffd.cli train --config <cfg.yaml> --set arm=raw_rep_filt --set run_name=raw_rep_filt
-python -m ffd.cli eval  --run <ckpt_root>/raw_rep_filt
-python -m ffd.realfp --ckpt-root <ckpt_root> --a raw_aug_filt --b raw_rep_filt
+python -m ffd.cli train --config config.yaml --set arm=raw_rep_filt --set num_workers=8
+python -m ffd.cli eval --run checkpoints/clip/raw_rep_filt
+python -m ffd.realfp --config config.yaml --a raw_aug_filt --b raw_rep_filt   # ckpt_root lấy từ config.yaml
 ```
 
 ## Thứ tự chạy: smoke -> main
