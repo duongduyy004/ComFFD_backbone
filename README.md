@@ -96,6 +96,13 @@ python -m ffd.cli eval --run checkpoints/clip/raw_rep_filt
 python -m ffd.realfp --config config.yaml --a raw_aug_filt --b raw_rep_filt   # ckpt_root lấy từ config.yaml
 ```
 
+`ffd.realfp` ghi `checkpoints/clip/realfp_<a>__<b>.json` và `.md`. Ngưỡng t mỗi arm = TPR 0.95 trên fake FF++ val
+(`scores_val.parquet` bắt buộc); chỉ số chính = tỉ lệ frame real Celeb-DF có logit >= t, diff b − a, CI95 bootstrap
+trên video real (B = 4000, seed 0), `verdict` ∈ `seam_hurts_real` (cận trên < 0), `inconclusive`, `seam_helps_real`
+(cận dưới > 0). Phụ: bản theo video, real FF++ test, AUC video Celeb-DF / FF++ test (bootstrap phân tầng), tỉ lệ ở
+logit >= 0, theo nguồn real (Celeb-real, YouTube-real). `verdict` chỉ có nghĩa cho cặp mặc định
+`raw_aug_filt → raw_rep_filt`; cặp khác thì `.md` ghi cảnh báo.
+
 ## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
