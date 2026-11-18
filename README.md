@@ -123,6 +123,28 @@ Ghi `features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.
 transform hoặc N khác -> `ValueError` (xóa thư mục hoặc đổi `--feat-root`). `--check-against` so thứ tự frame với
 `scores_*.parquet` của run đó (lệch -> lỗi). `--datasets val,celebdf` để chạy một phần.
 
+**2. Probe (CPU hoặc GPU, đọc cache):**
+
+```
+python -m ffd.probe --config config.yaml --arm probe_multi --seed 0          # tương tự probe_last, probe_gate; seed 0, 1, 2
+python -m ffd.probe --config config.yaml --arm probe_layer --layer all       # 24 probe một tầng + probe_layers.md
+```
+
+| arm | đầu vào | head |
+|---|---|---|
+| `probe_last` | slot 24 (`pooler_output`) | tuyến tính |
+| `probe_multi` | CLS tầng 8, 12, 16, 20, 24 (residual), nối | tuyến tính |
+| `probe_gate` | CLS cả 24 tầng | trọng số softmax theo tầng -> tuyến tính |
+| `probe_layer` | một tầng (`--layer l` hoặc `all`) | tuyến tính; **bảng chỉ mô tả, không chọn tầng** |
+
+Chuẩn hóa mean/std theo chiều trên train. Head khởi tạo 0. BCE, tỉ lệ lớp tự nhiên, AdamW lr 1e-3, batch 4096, tối đa
+50 epoch, patience 5 theo BCE val; weight decay chọn trong {1e-4, 1e-3, 1e-2} theo BCE val. FF++ test và Celeb-DF chỉ
+mở sau khi chốt weight decay. Thư mục cache = `--feat-root` (mặc định `features/clip`) / commit (`model_revision` nếu là
+hash 40 ký tự). Run `checkpoints/clip/<arm>_s<seed>/` (`probe_layer<l>_s<seed>`): `run_info.json` (slot, hằng số,
+meta cache, wd chọn, `alpha` của gate), `train_log.csv`, `head.pt`, `scores_{val,ffpp_test,celebdf}.parquet` (cùng cột,
+cùng thứ tự với `ffd.evaluate`, nên `ffd.realfp` dùng được), `result.json`. Có `result.json` thì bỏ qua (`--force` để
+chạy lại); `run_info.json` có hằng số/slot/cache khác -> `ValueError`.
+
 ## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
