@@ -25,6 +25,7 @@ import torch
 from . import metrics, tables
 from .config import TrainConfig, config_hash, run_name_of
 from .data import ffpp as D
+from .data.augfilter import check_arm_constants
 from .guards import allow_read
 from .io_utils import write_json_atomic, write_parquet_atomic
 from .model import Detector
@@ -74,6 +75,7 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
     cfg = _cfg_from_info(info, data_root)
     if config_hash(cfg) != info.get("config_hash"):
         raise ValueError(f"config dựng lại có hash {config_hash(cfg)} != config_hash run_info {info.get('config_hash')}")
+    check_arm_constants(cfg.arm, info, "không chấm điểm (xóa thư mục run hoặc train lại)")  # cli eval chạy riêng
     rec = info.get("data_hashes")
     if not rec:
         raise ValueError("run_info thiếu data_hashes; không kiểm được dữ liệu có đổi không")

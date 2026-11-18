@@ -172,3 +172,24 @@ def test_eval_rejects_changed_celebdf_manifest(trained, data_root, tmp_path):
     assert not list(run.glob("scores_*.parquet"))  # kiểm trước vòng chấm: val cũng không bị ghi
     # chỉ chấm val thì không đụng celebdf
     assert _ev(trained, data_root=root, datasets=("val",)).exists()
+
+
+@pytest.mark.parametrize("consts", [None, {"filter_min_r": 0.75, "filter_mask": "median_rep"}])
+def test_eval_refuses_stale_arm_constants(trained, data_root, tmp_path, consts):
+    """Arm filt (vd. raw_rep_filt chạy riêng bằng cli eval): arm_constants thiếu/khác hiện tại -> ValueError, không ghi gì."""
+    from ffd.config import config_hash
+    from ffd.evaluate import _cfg_from_info
+
+    run, vc = _copy_run(trained, tmp_path)
+    p = run / "run_info.json"
+    info = json.loads(p.read_text(encoding="utf-8"))
+    info["config"]["arm"] = "raw_rep_filt"
+    info["config_hash"] = config_hash(_cfg_from_info(info))
+    info.pop("arm_constants", None)
+    if consts is not None:  # run cũ trước khi có drop_seam
+        info["arm_constants"] = consts
+    p.write_text(json.dumps(info), encoding="utf-8")
+    (run / "result.json").unlink(missing_ok=True)  # bản chép có thể mang result.json của test trước
+    with pytest.raises(ValueError, match="hằng số arm"):
+        evaluate_run(run, data_root=data_root, vision_config=vc, device="cpu")
+    assert not (run / "result.json").exists()
