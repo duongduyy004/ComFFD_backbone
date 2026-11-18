@@ -41,7 +41,6 @@ _SRC = {"train": ("ffpp", "train", "train", "ffpp_train"), "val": ("ffpp", "val"
         "ffpp_test": ("ffpp", "test", "eval", "ffpp_test"), "celebdf": ("celebdf", None, "eval", "celebdf")}
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _INDEX_COLS = ["video_id", "frame_idx", "label", "method", "path"]
-VERIFY_N = 16
 VERIFY_TOL = 1e-2
 
 
@@ -133,9 +132,11 @@ def _check_against(run, commit: str, ds: str, idx: pd.DataFrame) -> None:
         print(f"[features] {ds}: thứ tự frame khớp {run}", flush=True)
 
 
-def _verify(vit, paths, arr, device) -> dict:
-    n = min(VERIFY_N, len(paths))
-    ref = _forward(vit, paths[:n], n, 0, device)
+def _verify(vit, paths, arr, device, batch_size) -> dict:
+    """Tính lại đúng batch đầu (cùng batch_size lúc trích) rồi so với cache. Cùng kích thước batch -> GPU chạy cùng
+    kernel, nên chỉ còn sai số làm tròn fp16; batch khác kích thước với TF32 lệch ~1e-2 sau 24 tầng (báo lỗi giả)."""
+    n = min(batch_size, len(paths))
+    ref = _forward(vit, paths[:n], batch_size, 0, device)
     got = np.asarray(arr[:n], dtype=np.float32)
     return {"n": n, **_verify_close(got, ref)}
 
@@ -215,7 +216,7 @@ def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_work
                               f"({precision})", flush=True)
                     if max_chunks is not None and k >= max_chunks and n_done < N:
                         return
-        verify = _verify(vit, paths, arr, device)
+        verify = _verify(vit, paths, arr, device, batch_size)
     finally:
         del arr  # nhả file trên Windows
     import transformers

@@ -182,3 +182,12 @@ def test_main_default_feat_root_in_data_root(tmp_path, monkeypatch):
     cfg.write_text(yaml.safe_dump({"data_root": str(root), "num_workers": 0}), encoding="utf-8")
     assert F.main(["--config", str(cfg), "--datasets", "val", "--batch-size", "4", "--device", "cpu"]) == 0
     assert (root / "features" / "clip" / "local" / "val" / "meta.json").is_file()
+
+
+def test_verify_recomputes_first_batch_with_extraction_batch_size(tmp_path, data_root, monkeypatch):
+    # Trên GPU (TF32), cùng ảnh trong batch khác kích thước cho kết quả lệch ~1e-2 sau 24 tầng: verify phải tính lại
+    # đúng batch đầu với đúng batch_size lúc trích, không phải batch 16 tùy ý.
+    calls, real = [], F._forward
+    monkeypatch.setattr(F, "_forward", lambda vit, paths, bs, nw, dev: calls.append((len(paths), bs)) or real(vit, paths, bs, nw, dev))
+    _extract(data_root, tmp_path)  # batch_size=4
+    assert calls == [(4, 4)]

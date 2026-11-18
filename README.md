@@ -119,7 +119,7 @@ Ghi `<data_root>/features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state
 `val`, `ffpp_test`, `celebdf`. `cls.npy` = memmap fp16 `[N, 25, 1024]`: slot 0..23 = CLS của `hidden_states[1..24]`
 (chưa LayerNorm), slot 24 = `pooler_output` (đầu vào head của `raw`). Cả bốn dataset ≈ **9.7 GB**. Ảnh qua
 `eval_transform`, không tăng cường. Ngắt giữa chừng thì chạy lại lệnh, tiếp từ khối cuối đã ghi (`state.json`);
-`meta.json` chỉ ghi khi xong (kèm kiểm 16 frame tính lại, lệch pooler > 1e-2 · max(1, |giá trị|) -> lỗi). Thư mục cache
+`meta.json` chỉ ghi khi xong (kèm kiểm: tính lại batch đầu với cùng `--batch-size` lúc trích, lệch pooler > 1e-2 · max(1, |giá trị|) -> lỗi). Thư mục cache
 có commit, manifest, transform, N hoặc `precision` khác -> `ValueError` (xóa thư mục hoặc đổi `--feat-root`).
 `--check-against` kiểm `model_commit` và thứ tự frame với `scores_*.parquet` của run đó **trước khi forward** (lệch ->
 lỗi ngay, không mất thời gian GPU). `--datasets val,celebdf` để chạy một phần.
