@@ -119,9 +119,15 @@ Ghi `features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.
 `val`, `ffpp_test`, `celebdf`. `cls.npy` = memmap fp16 `[N, 25, 1024]`: slot 0..23 = CLS của `hidden_states[1..24]`
 (chưa LayerNorm), slot 24 = `pooler_output` (đầu vào head của `raw`). Cả bốn dataset ≈ **9.7 GB**. Ảnh qua
 `eval_transform`, không tăng cường. Ngắt giữa chừng thì chạy lại lệnh, tiếp từ khối cuối đã ghi (`state.json`);
-`meta.json` chỉ ghi khi xong (kèm kiểm 16 frame tính lại, lệch pooler ≥ 1e-2 -> lỗi). Thư mục cache có commit, manifest,
-transform hoặc N khác -> `ValueError` (xóa thư mục hoặc đổi `--feat-root`). `--check-against` so thứ tự frame với
-`scores_*.parquet` của run đó (lệch -> lỗi). `--datasets val,celebdf` để chạy một phần.
+`meta.json` chỉ ghi khi xong (kèm kiểm 16 frame tính lại, lệch pooler > 1e-2 · max(1, |giá trị|) -> lỗi). Thư mục cache
+có commit, manifest, transform, N hoặc `precision` khác -> `ValueError` (xóa thư mục hoặc đổi `--feat-root`).
+`--check-against` kiểm `model_commit` và thứ tự frame với `scores_*.parquet` của run đó **trước khi forward** (lệch ->
+lỗi ngay, không mất thời gian GPU). `--datasets val,celebdf` để chạy một phần.
+
+Tốc độ: mỗi dataset một DataLoader (không dựng lại worker mỗi khối). Trên CUDA mặc định bật **TF32** (mantissa 10 bit,
+bằng độ chính xác fp16 khi lưu; nhanh hơn fp32 thuần khoảng 2–3 lần trên GPU Ampere trở lên); `--no-tf32` để tính fp32
+thuần. Sau khối đầu (4096 frame) lệnh in `frame/s` và số phút còn lại của dataset đó: xem dòng này để biết thời gian thật
+(ước lượng 30 phút trong spec chưa đo).
 
 **2. Probe (CPU hoặc GPU, đọc cache):**
 

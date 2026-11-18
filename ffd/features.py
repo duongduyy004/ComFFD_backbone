@@ -2,7 +2,7 @@
 
 Mỗi frame lưu L + 1 slot (ViT-L: 25 slot x 1024): slot l-1 = CLS của hidden_states[l] (l = 1..L, residual stream,
 chưa LayerNorm), slot L = pooler_output (CLS tầng cuối sau post_layernorm, đúng đầu vào head của arm `raw`).
-Tính fp32 (không autocast), lưu fp16.
+Tính fp32 (không autocast; CUDA mặc định bật TF32, tắt bằng --no-tf32; `precision` nằm trong key), lưu fp16.
 
 Bố cục `<feat_root>/<commit>/<dataset>/` (dataset ∈ train, val, ffpp_test, celebdf):
 - `cls.npy`: memmap fp16 [N, L+1, D]; ViT-L cả 4 dataset ≈ 9.7 GB.
@@ -96,13 +96,36 @@ def _check_key(out: Path, key: dict) -> None:
             raise ValueError(f"cache {out} ({name}) có khóa khác hiện tại: {diff}; xóa thư mục hoặc đổi --feat-root")
 
 
+def _loader(paths, batch_size, num_workers, device):
+    return torch.utils.data.DataLoader(EvalImages(paths), batch_size=batch_size, shuffle=False,
+                                       **loader_kwargs(num_workers, device))
+
+
 @torch.no_grad()
 def _forward(vit, paths, batch_size, num_workers, device) -> np.ndarray:
-    loader = torch.utils.data.DataLoader(EvalImages(paths), batch_size=batch_size, shuffle=False,
-                                         **loader_kwargs(num_workers, device))
-    out = [cls_slots(vit, x.to(device, non_blocking=True)).cpu().numpy()
-           for x in progress.bar(loader, desc="features", unit="batch", leave=False)]
-    return np.concatenate(out)
+    return np.concatenate([cls_slots(vit, x.to(device, non_blocking=True)).cpu().numpy()
+                           for x in _loader(paths, batch_size, num_workers, device)])
+
+
+def _precision(device, tf32: bool) -> str:
+    """CUDA + tf32: bật TF32 cho matmul/cudnn (mantissa 10 bit, bằng fp16 lúc lưu; nhanh hơn fp32 2-3 lần trên Ampere+)."""
+    cuda = torch.device(device).type == "cuda"
+    if cuda:
+        torch.backends.cuda.matmul.allow_tf32 = bool(tf32)
+        torch.backends.cudnn.allow_tf32 = bool(tf32)
+    return "tf32" if cuda and tf32 else "fp32"
+
+
+def _check_against(run, commit: str, ds: str, idx: pd.DataFrame) -> None:
+    """Trước mọi forward: commit model của run phải trùng; thứ tự frame phải khớp scores_<ds>.parquet của run."""
+    info = Path(run) / "run_info.json"
+    if info.exists():
+        mc = json.loads(info.read_text(encoding="utf-8")).get("model_commit")
+        if mc is not None and mc != commit:
+            raise ValueError(f"model_commit của {run} ({mc}) khác commit cache ({commit})")
+    if ds in ("val", "ffpp_test", "celebdf"):
+        check_order(idx, Path(run) / f"scores_{ds}.parquet")
+        print(f"[features] {ds}: thứ tự frame khớp {run}", flush=True)
 
 
 def _verify(vit, paths, arr, device) -> dict:
@@ -124,49 +147,69 @@ def _verify_close(got: np.ndarray, ref: np.ndarray) -> dict:
             "max_rel_hidden": float(hid)}
 
 
-def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_workers, chunk, device, max_chunks):
+def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_workers, chunk, device, max_chunks,
+                 precision, check_against):
     df, dropped = _frames(data_root, ds)
     h = data_hashes(data_root)
     n_layers, dim = vit.config.num_hidden_layers, vit.config.hidden_size
     key = {"commit": commit, "manifest_sha256": h["manifest_sha256"]["celebdf" if ds == "celebdf" else "raw"],
            "params_json_sha256": h["params_json_sha256"], "transform_id": transform_id(), "N": int(len(df)),
-           "num_layers": int(n_layers), "dim": int(dim)}
+           "num_layers": int(n_layers), "dim": int(dim), "precision": precision}
+    idx = pd.DataFrame({"video_id": df.video_id.astype(str), "frame_idx": df.frame_idx.astype(int),
+                        "label": df.label.astype(int), "method": df.method.astype(str),
+                        "path": df.path.map(str)})[_INDEX_COLS]
+    if check_against is not None:
+        _check_against(check_against, commit, ds, idx)
     out = out_dir / ds
     _check_key(out, key)
     if (out / "meta.json").exists():
         print(f"[features] {ds}: đã có, bỏ qua", flush=True)
         return
-    idx = pd.DataFrame({"video_id": df.video_id.astype(str), "frame_idx": df.frame_idx.astype(int),
-                        "label": df.label.astype(int), "method": df.method.astype(str),
-                        "path": df.path.map(str)})[_INDEX_COLS]
     st_path, npy = out / "state.json", out / "cls.npy"
     if st_path.exists():
         old = pd.read_parquet(out / "index.parquet")
         if not old.reset_index(drop=True).astype(str).equals(idx.astype(str)):
             raise ValueError(f"{out / 'index.parquet'} khác danh sách frame hiện tại; xóa thư mục cache")
-        n_done = int(json.loads(st_path.read_text(encoding="utf-8"))["n_done"])
+        st = json.loads(st_path.read_text(encoding="utf-8"))
+        n_done = int(st["n_done"])
+        if st.get("batch_size") != batch_size:
+            print(f"[features] {ds}: CẢNH BÁO chạy tiếp với batch {batch_size} khác lần trước ({st.get('batch_size')}); "
+                  "phần còn lại có thể lệch ~1e-6 so với chạy liền", flush=True)
         arr = np.load(npy, mmap_mode="r+")
     else:
         out.mkdir(parents=True, exist_ok=True)
         write_parquet_atomic(idx, out / "index.parquet")
         arr = np.lib.format.open_memmap(npy, mode="w+", dtype=np.float16, shape=(len(df), n_layers + 1, dim))
         n_done = 0
-        write_json_atomic({"key": key, "n_done": 0}, st_path)
-    t0, k = time.time(), 0
-    paths = list(idx.path)
+        write_json_atomic({"key": key, "n_done": 0, "batch_size": batch_size}, st_path)
+    t0, k, n_start = time.time(), 0, n_done
+    paths, N = list(idx.path), len(df)
     try:
-        while n_done < len(df):
-            if max_chunks is not None and k >= max_chunks:
-                return
-            end = min(n_done + chunk, len(df))
-            x = _forward(vit, paths[n_done:end], batch_size, num_workers, device)
-            x16 = x.astype(np.float16)
-            if not (np.isfinite(x).all() and np.isfinite(x16).all()):  # NaN/inf, hoặc tràn fp16 (> 65504)
-                raise ValueError(f"{ds}: đặc trưng không hữu hạn (hoặc tràn fp16) ở dòng {n_done}..{end - 1}")
-            arr[n_done:end] = x16
-            arr.flush()
-            n_done, k = end, k + 1
-            write_json_atomic({"key": key, "n_done": n_done}, st_path)  # chỉ sau khi khối đã flush
+        if n_done < N:
+            # Một DataLoader cho phần còn lại; ghi khối (flush rồi state.json) ở ranh giới batch khi đã đủ >= chunk
+            # dòng, nên chạy tiếp bắt đầu đúng ranh giới batch cũ (cùng cách chia batch với chạy liền).
+            pos = n_done
+            with torch.no_grad():
+                for x in progress.bar(_loader(paths[n_done:], batch_size, num_workers, device),
+                                      desc=f"features {ds}", unit="batch", leave=False):
+                    f = cls_slots(vit, x.to(device, non_blocking=True)).cpu().numpy()
+                    f16 = f.astype(np.float16)
+                    if not (np.isfinite(f).all() and np.isfinite(f16).all()):  # NaN/inf hoặc tràn fp16 (> 65504)
+                        raise ValueError(f"{ds}: đặc trưng không hữu hạn (hoặc tràn fp16) ở dòng "
+                                         f"{pos}..{pos + len(f) - 1}")
+                    arr[pos:pos + len(f)] = f16
+                    pos += len(f)
+                    if pos - n_done < chunk and pos < N:
+                        continue
+                    arr.flush()
+                    n_done, k = pos, k + 1
+                    write_json_atomic({"key": key, "n_done": n_done, "batch_size": batch_size}, st_path)
+                    if k == 1:
+                        rate = (n_done - n_start) / max(time.time() - t0, 1e-9)
+                        print(f"[features] {ds}: {rate:.1f} frame/s, còn ~{(N - n_done) / rate / 60:.1f} phút "
+                              f"({precision})", flush=True)
+                    if max_chunks is not None and k >= max_chunks and n_done < N:
+                        return
         verify = _verify(vit, paths, arr, device)
     finally:
         del arr  # nhả file trên Windows
@@ -179,8 +222,10 @@ def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_work
 
 
 def extract_features(data_root, feat_root, *, datasets=FEAT_DATASETS, model_name, model_revision, batch_size=64,
-                     num_workers=4, chunk=4096, device=None, vision_config=None, max_chunks=None) -> Path:
-    """Cache CLS cho `datasets`; trả <feat_root>/<commit>. `max_chunks` chỉ để test mô phỏng ngắt."""
+                     num_workers=4, chunk=4096, device=None, vision_config=None, max_chunks=None, tf32: bool = True,
+                     check_against=None) -> Path:
+    """Cache CLS cho `datasets`; trả <feat_root>/<commit>. `max_chunks` chỉ để test mô phỏng ngắt.
+    `check_against` (thư mục run, vd checkpoints/clip/raw): kiểm commit + thứ tự frame TRƯỚC khi forward."""
     datasets = tuple(datasets)
     bad = [d for d in datasets if d not in FEAT_DATASETS]
     if bad or not datasets:
@@ -188,9 +233,11 @@ def extract_features(data_root, feat_root, *, datasets=FEAT_DATASETS, model_name
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     vit, commit = _build_model(model_name, model_revision, vision_config)
     vit.to(device)
+    precision = _precision(device, tf32)
     out_dir = Path(feat_root) / commit
     for ds in datasets:
-        _extract_one(vit, commit, data_root, out_dir, ds, batch_size, num_workers, chunk, device, max_chunks)
+        _extract_one(vit, commit, data_root, out_dir, ds, batch_size, num_workers, chunk, device, max_chunks,
+                     precision, check_against)
     return out_dir
 
 
@@ -222,18 +269,15 @@ def main(argv=None) -> int:
     ap.add_argument("--datasets", default=",".join(FEAT_DATASETS))
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--device", default=None)
-    ap.add_argument("--check-against", default=None, help="thư mục run (vd checkpoints/clip/raw) để so thứ tự frame")
+    ap.add_argument("--check-against", default=None,
+                    help="thư mục run (vd checkpoints/clip/raw): kiểm commit và thứ tự frame trước khi trích")
+    ap.add_argument("--no-tf32", action="store_true", help="tính fp32 thuần trên CUDA (chậm hơn 2-3 lần)")
     a = ap.parse_args(argv)
     cfg = load_train_config(a.config)
     datasets = tuple(d for d in a.datasets.split(",") if d)
     d = extract_features(cfg.data_root, a.feat_root, datasets=datasets, model_name=cfg.model_name,
                          model_revision=cfg.model_revision, batch_size=a.batch_size, num_workers=cfg.num_workers,
-                         device=a.device)
-    if a.check_against:
-        for ds in ("val", "ffpp_test", "celebdf"):
-            if ds in datasets:
-                check_order(load_features(d, ds)[1], Path(a.check_against) / f"scores_{ds}.parquet")
-                print(f"[features] {ds}: thứ tự khớp {a.check_against}", flush=True)
+                         device=a.device, tf32=not a.no_tf32, check_against=a.check_against)
     print(f"[features] xong: {d}", flush=True)
     return 0
 
