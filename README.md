@@ -145,6 +145,20 @@ meta cache, wd chọn, `alpha` của gate), `train_log.csv`, `head.pt`, `scores_
 cùng thứ tự với `ffd.evaluate`, nên `ffd.realfp` dùng được), `result.json`. Có `result.json` thì bỏ qua (`--force` để
 chạy lại); `run_info.json` có hằng số/slot/cache khác -> `ValueError`.
 
+**3. So sánh với `raw` (mức video):**
+
+```
+python -m ffd.videoboot --config config.yaml --base raw --arms probe_last_s0 probe_multi_s0 probe_gate_s0
+python -m ffd.realfp --config config.yaml --a raw --b probe_multi_s0
+```
+
+`ffd.videoboot` ghi `checkpoints/clip/videoboot_<base>.{json,md}` (`--name` để đổi tên; không đụng `summary.md`): AUC
+video và FPR@TPR95 video từng arm trên FF++ test và Celeb-DF, hiệu arm − gốc kèm CI95 (bootstrap phân tầng theo lớp,
+B = 4000, seed 0, cùng cách bốc mẫu với `scripts/video_bootstrap.py`), tương quan điểm video real giữa gốc và arm.
+Chỉ số chính spec v6: ΔAUC video Celeb-DF của `probe_multi_s0`; đồng chính: ΔFPR@TPR95. Tiêu chí ở spec mục 4.
+Kiểm 18/11 trên điểm cũ (`raw` vs `raw_aug_filt`) cho đúng các số của `summary.md`. Lưu ý: CI của ΔFPR@TPR95 rất rộng
+(cặp đó: +0.024 [−0.077, +0.160]).
+
 ## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
