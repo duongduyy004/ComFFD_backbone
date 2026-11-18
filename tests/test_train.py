@@ -268,3 +268,23 @@ def test_resume_refuses_missing_arm_constants(cfg_tiny_loc, tiny):
     p.write_text(json.dumps(info), encoding="utf-8")
     with pytest.raises(ValueError, match="hằng số arm"):
         run(cfg_tiny_loc, tiny, resume=True)
+
+
+def test_amp_dtype_env(monkeypatch):
+    monkeypatch.delenv("FFD_AMP", raising=False)
+    assert T._amp_dtype() is torch.bfloat16  # mặc định không đổi
+    monkeypatch.setenv("FFD_AMP", "fp16")
+    assert T._amp_dtype() is torch.float16
+    monkeypatch.setenv("FFD_AMP", "fp32")
+    with pytest.raises(ValueError):
+        T._amp_dtype()
+
+
+def test_grad_scaler_noop_on_cpu_and_bf16(monkeypatch):
+    for v in ("bf16", "fp16"):
+        monkeypatch.setenv("FFD_AMP", v)
+        assert not T._grad_scaler("cpu").is_enabled()  # CPU: luôn tắt
+    monkeypatch.setenv("FFD_AMP", "bf16")
+    assert not T._grad_scaler("cuda").is_enabled()  # bf16 trên CUDA: tắt (hành vi cũ)
+    monkeypatch.setenv("FFD_AMP", "fp16")
+    assert T._grad_scaler("cuda").is_enabled() == torch.cuda.is_available()  # fp16: bật khi có CUDA

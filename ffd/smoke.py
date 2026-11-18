@@ -21,7 +21,7 @@ from .data.trainset import TrainList
 from .guards import allow_read
 from .io_utils import write_json_atomic
 from .model import Detector
-from .train import epoch_batches, loader_kwargs
+from .train import _autocast, _grad_scaler, epoch_batches, loader_kwargs
 
 N_SAMPLES = 16
 
@@ -58,6 +58,7 @@ def smoke(cfg: TrainConfig, steps: int) -> Path:
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
     ds = TrainList(cfg.data_root, "raw_aug", cfg.seed, cfg.p_jpeg, cfg.jpeg_q)
+    scaler = _grad_scaler(device)
     model.train()
     torch.cuda.reset_peak_memory_stats()
     done, t0, epoch = 0, None, 0
@@ -70,11 +71,13 @@ def smoke(cfg: TrainConfig, steps: int) -> Path:
         for batch in loader:
             x = batch["image"].to(device, non_blocking=True)
             y = batch["label"].to(device=device, dtype=torch.float32, non_blocking=True)
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with _autocast(device):
                 loss, _ = model.head.loss(model(x), {"L0": y})
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(params, 1.0)
-            opt.step()
+            scaler.step(opt)
+            scaler.update()
             opt.zero_grad(set_to_none=True)
             done += 1
             pb.update(1)

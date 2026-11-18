@@ -95,10 +95,25 @@ def _seed_worker(worker_id: int, seed: int) -> None:
     torch.manual_seed(s)
 
 
+def _amp_dtype():
+    """Kiểu autocast trên CUDA: biến môi trường FFD_AMP = bf16 (mặc định) | fp16 (GPU không có bf16, vd. T4).
+    Không nằm trong config_hash; đổi giữa các lần chạy làm số học lệch nhẹ so với run cũ (không bit-giống)."""
+    v = os.environ.get("FFD_AMP", "bf16").strip().lower()
+    if v not in ("bf16", "fp16"):
+        raise ValueError(f"FFD_AMP phải là bf16 hoặc fp16, nhận {v!r}")
+    return torch.float16 if v == "fp16" else torch.bfloat16
+
+
 def _autocast(device):
     if torch.device(device).type == "cuda":
-        return torch.autocast("cuda", dtype=torch.bfloat16)
+        return torch.autocast("cuda", dtype=_amp_dtype())
     return contextlib.nullcontext()
+
+
+def _grad_scaler(device):
+    """GradScaler chỉ bật khi fp16 trên CUDA; còn lại là no-op (scale/unscale_/step/update giữ nguyên hành vi cũ)."""
+    on = torch.device(device).type == "cuda" and _amp_dtype() == torch.float16
+    return torch.amp.GradScaler("cuda", enabled=on)
 
 
 class EvalImages(torch.utils.data.Dataset):
@@ -266,6 +281,7 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
         _truncate_log(d / "train_log.csv", epoch)
 
     name = run_name_of(cfg)
+    scaler = _grad_scaler(device)  # trạng thái scaler không lưu trong last.pt (khởi tạo lại khi resume)
     model.train()
     while epoch < cfg.max_epochs and bad < cfg.patience:
         epoch += 1
@@ -295,9 +311,11 @@ def train(cfg: TrainConfig, *, resume: bool = False, force: bool = False, vision
                 pb.close()
                 raise FloatingPointError(f"Loss không hữu hạn ở epoch {epoch} step {step + 1}; "
                                          f"video_id={err['video_ids']}")
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(params, 1.0)
-            opt.step()
+            scaler.step(opt)  # fp16: bỏ bước nếu gradient inf/nan (và giảm scale); bf16: như opt.step()
+            scaler.update()
             sched.step()
             opt.zero_grad(set_to_none=True)
             step += 1
