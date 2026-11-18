@@ -260,6 +260,30 @@ def test_resume_refuses_changed_arm_constants(cfg_tiny_loc, tiny, monkeypatch):
         run(cfg_tiny_loc, tiny, resume=True)
 
 
+# ---- arm raw_rep_filt (spec v5) ----
+@pytest.fixture
+def cfg_tiny_rep(cfg_tiny):
+    return dataclasses.replace(cfg_tiny, arm="raw_rep_filt", max_epochs=1)
+
+
+def test_train_rep_filt_arm_runs(cfg_tiny_rep, tiny):
+    d = run(cfg_tiny_rep, tiny)
+    info = json.loads((d / "run_info.json").read_text(encoding="utf-8"))
+    assert info["arm_constants"]["drop_seam"] is True and info["aug_stats"]["n_seam_dropped"] > 0
+    best = torch.load(d / "best.pt", map_location="cpu", weights_only=False)
+    assert not any(k.startswith("loc_head") for k in best["trainable"])
+
+
+def test_resume_refuses_constants_without_drop_seam(cfg_tiny_rep, tiny):
+    d = run(cfg_tiny_rep, tiny)
+    p = d / "run_info.json"
+    info = json.loads(p.read_text(encoding="utf-8"))
+    del info["arm_constants"]["drop_seam"]
+    p.write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match="hằng số arm"):
+        run(cfg_tiny_rep, tiny, resume=True)
+
+
 def test_resume_refuses_missing_arm_constants(cfg_tiny_loc, tiny):
     d = run(cfg_tiny_loc, tiny)
     p = d / "run_info.json"

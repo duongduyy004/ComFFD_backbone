@@ -14,7 +14,11 @@ from typing import Literal
 import yaml
 
 ARMS = ("raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc")
-FILTER_ARMS = ("raw_aug_filt", "raw_aug_filt_loc")
+# Arm hợp lệ nhưng không chạy trong `main` (chạy riêng bằng train + eval). raw_rep_filt: spec v5.
+EXTRA_ARMS = ("raw_rep_filt",)
+ALL_ARMS = ARMS + EXTRA_ARMS
+FILTER_ARMS = ("raw_aug_filt", "raw_aug_filt_loc", "raw_rep_filt")
+DROP_SEAM_ARMS = ("raw_rep_filt",)  # filt rồi bỏ mọi ảnh seam
 LOC_ARMS = ("raw_aug_filt_loc",)
 _PATH_FIELDS = ("data_root", "ckpt_root")
 _TUPLE_FIELDS = ("lora_targets", "tap_layers")
@@ -27,7 +31,7 @@ _HASH_SKIP = ("data_root", "ckpt_root", "num_workers", "grad_checkpointing", "ru
 class TrainConfig:
     data_root: Path  # out_root của preprocessing (chứa manifest và ảnh)
     ckpt_root: Path = Path("checkpoints/clip")
-    arm: Literal["raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc"] = "raw"
+    arm: Literal["raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc", "raw_rep_filt"] = "raw"
     run_name: str | None = None  # None -> dùng arm
     seed: int = 0
     model_name: str = "openai/clip-vit-large-patch14"
@@ -67,8 +71,8 @@ def load_train_config(path, overrides: dict | None = None) -> TrainConfig:
         cfg = TrainConfig(**d)
     except TypeError as e:
         raise ValueError(f"Thiếu khóa bắt buộc: {e}") from e
-    if cfg.arm not in ARMS:
-        raise ValueError(f"arm phải thuộc {ARMS}, nhận {cfg.arm!r}")
+    if cfg.arm not in ALL_ARMS:
+        raise ValueError(f"arm phải thuộc {ALL_ARMS}, nhận {cfg.arm!r}")
     if not 0.0 <= cfg.p_jpeg <= 1.0:
         raise ValueError(f"p_jpeg phải nằm trong [0, 1], nhận {cfg.p_jpeg}")
     if cfg.patience < 1:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ..config import ARMS, FILTER_ARMS, LOC_ARMS
+from ..config import ALL_ARMS, DROP_SEAM_ARMS, FILTER_ARMS, LOC_ARMS
 from ..io_utils import item_seed
 
 FILTER_MIN_R = 0.75
@@ -18,13 +18,15 @@ LOC_LAMBDA = 1.0
 
 def arm_constants(arm: str) -> dict:
     """Hằng số gắn arm (không nằm trong TrainConfig). Arm cũ -> {}."""
-    if arm not in ARMS:
-        raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
+    if arm not in ALL_ARMS:
+        raise ValueError(f"arm phải thuộc {ALL_ARMS}, nhận {arm!r}")
     if arm not in FILTER_ARMS:
         return {}
     c = {"filter_min_r": FILTER_MIN_R, "filter_mask": "median_rep"}
     if arm in LOC_ARMS:
         c["loc_lambda"] = LOC_LAMBDA
+    if arm in DROP_SEAM_ARMS:
+        c["drop_seam"] = True
     return c
 
 

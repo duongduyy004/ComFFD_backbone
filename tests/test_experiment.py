@@ -215,7 +215,7 @@ def test_summary_has_four_arms(monkeypatch, tmp_path):
     assert md.count("| ffpp_test | 0.8000 | 0.9000 | +0.1000 | [+0.0200, +0.1800] | 0.003 |") == 4
 
 
-@pytest.mark.parametrize("arm", ["raw_aug_filt", "raw_aug_filt_loc"])
+@pytest.mark.parametrize("arm", ["raw_aug_filt", "raw_aug_filt_loc", "raw_rep_filt"])
 @pytest.mark.parametrize("stage", ["result", "done", "last"])
 def test_arm_constants_mismatch_refuses(monkeypatch, tmp_path, arm, stage):
     """Run arm filt trên đĩa có arm_constants khác (hoặc thiếu) -> ValueError ở cả đường bỏ qua, eval, resume."""

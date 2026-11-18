@@ -1,5 +1,5 @@
 """Tập train cố định: raw train (+ ảnh tăng cường nếu arm raw_aug*; arm raw_aug_filt* lọc và cân bằng lại; arm
-raw_aug_filt_loc thêm nhãn patch từ mask). Mỗi epoch đi hết mọi ảnh một lần (việc xáo trộn thuộc train loop).
+raw_aug_filt_loc thêm nhãn patch từ mask; arm raw_rep_filt lọc như raw_aug_filt rồi bỏ seam). Mỗi epoch đi hết mọi ảnh một lần (việc xáo trộn thuộc train loop).
 Trạng thái: chưa chạy thử trên dữ liệu thật.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .. import io_utils
-from ..config import ARMS, FILTER_ARMS, LOC_ARMS
+from ..config import ALL_ARMS, DROP_SEAM_ARMS, FILTER_ARMS, LOC_ARMS
 from ..guards import LeakageError, allow_read
 from . import ffpp
 from .augfilter import balance_aug, filter_aug
@@ -34,8 +34,8 @@ class TrainList(Dataset):
     `aug_stats`: thống kê lọc + cân bằng (rỗng ở arm cũ)."""
 
     def __init__(self, data_root, arm: str, seed: int, p_jpeg: float, jpeg_q: int, grid: int = 16):
-        if arm not in ARMS:
-            raise ValueError(f"arm phải thuộc {ARMS}, nhận {arm!r}")
+        if arm not in ALL_ARMS:
+            raise ValueError(f"arm phải thuộc {ALL_ARMS}, nhận {arm!r}")
         allow_read("train", "ffpp_train")
         raw = ffpp.frames(data_root, "ffpp", "train")
         parts = [pd.DataFrame({"path": raw.path, "label": raw.label.astype(int), "source": "raw",
@@ -51,6 +51,10 @@ class TrainList(Dataset):
                 aug, fst = filter_aug(aug)
                 aug, bst = balance_aug(aug, int((raw.label == 0).sum()), int((raw.label == 1).sum()))
                 self.aug_stats = {**fst, **bst}
+                if arm in DROP_SEAM_ARMS:  # raw_rep_filt: cùng tập rep với raw_aug_filt, bỏ seam
+                    seam = aug.kind == "seam"
+                    self.aug_stats["n_seam_dropped"] = int(seam.sum())
+                    aug = aug[~seam].reset_index(drop=True)
             df = pd.DataFrame({"path": aug.path, "label": aug.label.astype(int), "source": aug.kind,
                                "video_id": aug.video_id})
             if arm in FILTER_ARMS:

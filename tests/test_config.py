@@ -47,6 +47,16 @@ def test_validation(tmp_path):
             load_train_config(wr(tmp_path), {k: v})
 
 
+def test_extra_arm_valid_but_not_in_main(tmp_path):
+    from ffd.config import ALL_ARMS, DROP_SEAM_ARMS, FILTER_ARMS, LOC_ARMS
+    assert ARMS == ("raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc")
+    assert ALL_ARMS == ARMS + ("raw_rep_filt",)
+    assert "raw_rep_filt" in FILTER_ARMS and DROP_SEAM_ARMS == ("raw_rep_filt",) and "raw_rep_filt" not in LOC_ARMS
+    assert load_train_config(wr(tmp_path), {"arm": "raw_rep_filt"}).arm == "raw_rep_filt"
+    with pytest.raises(ValueError):
+        load_train_config(wr(tmp_path), {"arm": "raw_rep_flt"})
+
+
 def test_hash_ignores_paths_and_workers(tmp_path):
     a = load_train_config(wr(tmp_path))
     b = load_train_config(wr(tmp_path), {"data_root": "E:/y", "ckpt_root": "z", "num_workers": 0, "run_name": "n"})

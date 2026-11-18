@@ -80,6 +80,8 @@ def test_arm_constants():
     assert arm_constants("raw_aug_filt_loc") == {"filter_min_r": 0.75, "filter_mask": "median_rep",
                                                  "loc_lambda": LOC_LAMBDA}
     assert LOC_LAMBDA == 1.0
+    assert arm_constants("raw_rep_filt") == {"filter_min_r": 0.75, "filter_mask": "median_rep", "drop_seam": True}
+    assert "drop_seam" not in arm_constants("raw_aug_filt")
 
 
 def test_aug_frames_columns(data_root):

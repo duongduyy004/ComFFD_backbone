@@ -84,6 +84,18 @@ Hằng số gắn arm nằm trong code (`ffd/data/augfilter.py`), **không** ph�
   `result.json`. Run `raw_aug_filt*` trên đĩa mà `arm_constants` thiếu hoặc khác hằng số hiện tại -> `ValueError` ở
   mọi đường (bỏ qua, eval lại, resume): xóa thư mục run hoặc đổi `ckpt_root`. Arm `raw`, `raw_aug` không đổi gì.
 
+## Arm phụ `raw_rep_filt` (spec v5, ngoài `main`)
+
+`raw_aug_filt` bỏ mọi ảnh `seam`: lọc + cân bằng y hệt, rồi bỏ seam, nên tập rep giống hệt `raw_aug_filt`. Mục đích: xem
+bỏ seam thì real Celeb-DF có bớt bị đoán fake không. `arm_constants` thêm `drop_seam: true`; `aug_stats` thêm
+`n_seam_dropped`. Không có head loc. Không thuộc `ARMS` nên `main` không chạy; chạy riêng:
+
+```
+python -m ffd.cli train --config <cfg.yaml> --set arm=raw_rep_filt --set run_name=raw_rep_filt
+python -m ffd.cli eval  --run <ckpt_root>/raw_rep_filt
+python -m ffd.realfp --ckpt-root <ckpt_root> --a raw_aug_filt --b raw_rep_filt
+```
+
 ## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.

@@ -152,6 +152,18 @@ def test_filt_arm_applies_filter(data_root):
     assert t.items[t.items.source != "rep"].mask_path.isna().all()
 
 
+def test_rep_filt_arm_drops_seam_keeps_reps(data_root):
+    t = TrainList(data_root, "raw_rep_filt", 0, 0.5, 95)
+    u = TrainList(data_root, "raw_aug_filt", 0, 0.5, 95)
+    assert set(t.items.source) == {"raw", "rep"}
+    assert list(t.items[t.items.source == "rep"].path) == list(u.items[u.items.source == "rep"].path)
+    assert list(t.items[t.items.source == "raw"].path) == list(u.items[u.items.source == "raw"].path)
+    assert t.aug_stats == {**u.aug_stats, "n_seam_dropped": u.aug_stats["n_seam_after"]}
+    assert t.aug_stats["n_seam_dropped"] > 0
+    assert t.items[t.items.source == "rep"].mask_path.notna().all()
+    assert set(t[len(t) - 1]) == {"image", "label", "source", "jpeg"}  # không có nhãn patch
+
+
 def test_loc_item_targets(data_root):
     t = _loc(data_root)
     seen = set()
