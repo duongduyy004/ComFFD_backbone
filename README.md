@@ -103,6 +103,26 @@ trên video real (B = 4000, seed 0), `verdict` ∈ `seam_hurts_real` (cận trê
 logit >= 0, theo nguồn real (Celeb-real, YouTube-real). `verdict` chỉ có nghĩa cho cặp mặc định
 `raw_aug_filt → raw_rep_filt`; cặp khác thì `.md` ghi cảnh báo.
 
+## Cache đặc trưng và probe (spec v6, ngoài `main`)
+
+Spec: `../spec_v6_probe_cache_2026-11-18.md`. Trả lời: CLIP **đóng băng** + head tuyến tính có xếp hạng real/fake
+Celeb-DF tốt hơn `raw` (LoRA) không. Mọi lệnh dùng `--config config.yaml` (lấy `data_root`, `ckpt_root`, `model_name`,
+`model_revision`, `num_workers`); không thêm khóa vào `TrainConfig`.
+
+**1. Cache (GPU, một lần):**
+
+```
+python -m ffd.features --config config.yaml --check-against checkpoints/clip/raw
+```
+
+Ghi `features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.json}` cho `train` (raw train),
+`val`, `ffpp_test`, `celebdf`. `cls.npy` = memmap fp16 `[N, 25, 1024]`: slot 0..23 = CLS của `hidden_states[1..24]`
+(chưa LayerNorm), slot 24 = `pooler_output` (đầu vào head của `raw`). Cả bốn dataset ≈ **9.7 GB**. Ảnh qua
+`eval_transform`, không tăng cường. Ngắt giữa chừng thì chạy lại lệnh, tiếp từ khối cuối đã ghi (`state.json`);
+`meta.json` chỉ ghi khi xong (kèm kiểm 16 frame tính lại, lệch pooler ≥ 1e-2 -> lỗi). Thư mục cache có commit, manifest,
+transform hoặc N khác -> `ValueError` (xóa thư mục hoặc đổi `--feat-root`). `--check-against` so thứ tự frame với
+`scores_*.parquet` của run đó (lệch -> lỗi). `--datasets val,celebdf` để chạy một phần.
+
 ## Thứ tự chạy: smoke -> main
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
