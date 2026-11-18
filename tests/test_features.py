@@ -170,3 +170,15 @@ def test_precision_recorded(feat_dir):
 def test_progress_prints_rate(tmp_path, data_root, capsys):
     _extract(data_root, tmp_path)
     assert "frame/s" in capsys.readouterr().out
+
+
+def test_main_default_feat_root_in_data_root(tmp_path, monkeypatch):
+    from synth_ffpp import make_data_root
+
+    root = make_data_root(tmp_path / "data")
+    real = F._build_model
+    monkeypatch.setattr(F, "_build_model", lambda name, rev, vc: real("local-tiny", None, _vc()))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"data_root": str(root), "num_workers": 0}), encoding="utf-8")
+    assert F.main(["--config", str(cfg), "--datasets", "val", "--batch-size", "4", "--device", "cpu"]) == 0
+    assert (root / "features" / "clip" / "local" / "val" / "meta.json").is_file()

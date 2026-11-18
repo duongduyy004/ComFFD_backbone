@@ -4,7 +4,7 @@ Mỗi frame lưu L + 1 slot (ViT-L: 25 slot x 1024): slot l-1 = CLS của hidden
 chưa LayerNorm), slot L = pooler_output (CLS tầng cuối sau post_layernorm, đúng đầu vào head của arm `raw`).
 Tính fp32 (không autocast; CUDA mặc định bật TF32, tắt bằng --no-tf32; `precision` nằm trong key), lưu fp16.
 
-Bố cục `<feat_root>/<commit>/<dataset>/` (dataset ∈ train, val, ffpp_test, celebdf):
+Bố cục `<feat_root>/<commit>/<dataset>/` (`feat_root` mặc định `<data_root>/features/clip`) (dataset ∈ train, val, ffpp_test, celebdf):
 - `cls.npy`: memmap fp16 [N, L+1, D]; ViT-L cả 4 dataset ≈ 9.7 GB.
 - `index.parquet`: video_id, frame_idx, label, method, path; cùng thứ tự `cls.npy` và `ffpp.frames()`.
 - `state.json`: {"key": ..., "n_done": int}; cập nhật sau mỗi khối đã flush (chạy tiếp từ n_done).
@@ -69,6 +69,11 @@ def cls_slots(vit, x: torch.Tensor) -> torch.Tensor:
 def transform_id() -> str:
     s = inspect.getsource(T.eval_transform) + inspect.getsource(T._to_tensor) + repr((T.CLIP_MEAN, T.CLIP_STD))
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
+
+
+def default_feat_root(cfg) -> Path:
+    """Thư mục cache mặc định: <data_root>/features/clip (cạnh dữ liệu; không ảnh hưởng data_hashes)."""
+    return Path(cfg.data_root) / "features" / "clip"
 
 
 def feat_dir_of(cfg, feat_root) -> Path:
@@ -265,7 +270,7 @@ def main(argv=None) -> int:
 
     ap = argparse.ArgumentParser(prog="python -m ffd.features", description="Cache CLS CLIP đóng băng (spec v6)")
     ap.add_argument("--config", required=True, help="config.yaml của train (data_root, model, num_workers)")
-    ap.add_argument("--feat-root", default="features/clip")
+    ap.add_argument("--feat-root", default=None, help="mặc định <data_root>/features/clip")
     ap.add_argument("--datasets", default=",".join(FEAT_DATASETS))
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--device", default=None)
@@ -275,7 +280,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     cfg = load_train_config(a.config)
     datasets = tuple(d for d in a.datasets.split(",") if d)
-    d = extract_features(cfg.data_root, a.feat_root, datasets=datasets, model_name=cfg.model_name,
+    d = extract_features(cfg.data_root, a.feat_root or default_feat_root(cfg), datasets=datasets, model_name=cfg.model_name,
                          model_revision=cfg.model_revision, batch_size=a.batch_size, num_workers=cfg.num_workers,
                          device=a.device, tf32=not a.no_tf32, check_against=a.check_against)
     print(f"[features] xong: {d}", flush=True)

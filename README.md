@@ -115,7 +115,7 @@ Celeb-DF tốt hơn `raw` (LoRA) không. Mọi lệnh dùng `--config config.yam
 python -m ffd.features --config config.yaml --check-against checkpoints/clip/raw
 ```
 
-Ghi `features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.json}` cho `train` (raw train),
+Ghi `<data_root>/features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.json}` cho `train` (raw train),
 `val`, `ffpp_test`, `celebdf`. `cls.npy` = memmap fp16 `[N, 25, 1024]`: slot 0..23 = CLS của `hidden_states[1..24]`
 (chưa LayerNorm), slot 24 = `pooler_output` (đầu vào head của `raw`). Cả bốn dataset ≈ **9.7 GB**. Ảnh qua
 `eval_transform`, không tăng cường. Ngắt giữa chừng thì chạy lại lệnh, tiếp từ khối cuối đã ghi (`state.json`);
@@ -145,7 +145,7 @@ python -m ffd.probe --config config.yaml --arm probe_layer --layer all       # 2
 
 Chuẩn hóa mean/std theo chiều trên train. Head khởi tạo 0. BCE, tỉ lệ lớp tự nhiên, AdamW lr 1e-3, batch 4096, tối đa
 50 epoch, patience 5 theo BCE val; weight decay chọn trong {1e-4, 1e-3, 1e-2} theo BCE val. FF++ test và Celeb-DF chỉ
-mở sau khi chốt weight decay. Thư mục cache = `--feat-root` (mặc định `features/clip`) / commit (`model_revision` nếu là
+mở sau khi chốt weight decay. Thư mục cache = `--feat-root` (mặc định `<data_root>/features/clip`, cạnh dữ liệu; không làm lệch `data_hashes`) / commit (`model_revision` nếu là
 hash 40 ký tự). Run `checkpoints/clip/<arm>_s<seed>/` (`probe_layer<l>_s<seed>`): `run_info.json` (slot, hằng số,
 meta cache, wd chọn, `alpha` của gate), `train_log.csv`, `head.pt`, `scores_{val,ffpp_test,celebdf}.parquet` (cùng cột,
 cùng thứ tự với `ffd.evaluate`, nên `ffd.realfp` dùng được), `result.json`. Có `result.json` thì bỏ qua (`--force` để

@@ -25,7 +25,7 @@ from torch import nn
 
 from . import stats
 from .evaluate import _SCORE_COLS
-from .features import feat_dir_of, load_features
+from .features import default_feat_root, feat_dir_of, load_features
 from .guards import allow_read
 from .io_utils import write_json_atomic, write_parquet_atomic
 from .metrics import frame_block
@@ -269,7 +269,7 @@ def main(argv=None) -> int:
 
     ap = argparse.ArgumentParser(prog="python -m ffd.probe", description="Probe trên cache CLS (spec v6)")
     ap.add_argument("--config", required=True, help="config.yaml của train (ckpt_root, model_revision)")
-    ap.add_argument("--feat-root", default="features/clip")
+    ap.add_argument("--feat-root", default=None, help="mặc định <data_root>/features/clip (như ffd.features)")
     ap.add_argument("--arm", required=True, choices=PROBE_ARMS)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--layer", default=None, help="số tầng hoặc 'all' (chỉ với probe_layer)")
@@ -277,7 +277,7 @@ def main(argv=None) -> int:
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args(argv)
     cfg = load_train_config(a.config)
-    fd = feat_dir_of(cfg, a.feat_root)
+    fd = feat_dir_of(cfg, a.feat_root or default_feat_root(cfg))
     device = a.device or ("cuda" if torch.cuda.is_available() else "cpu")
     if a.arm != "probe_layer":
         if a.layer is not None:

@@ -1,5 +1,6 @@
 """Test probe trên cache đặc trưng tổng hợp (MINH HỌA). CPU."""
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -166,3 +167,14 @@ def test_nonfinite_cache_clear_error(tmp_path):
     np.save(fd / "train" / "cls.npy", x)
     with pytest.raises(ValueError, match="không hữu hạn"):
         P.run_probe(fd, tmp_path / "ck", "probe_last")
+
+
+def test_main_default_feat_root_in_data_root(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(P, "feat_dir_of", lambda cfg, root: seen.setdefault("root", root))
+    monkeypatch.setattr(P, "run_probe", lambda *a, **k: None)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.safe_dump({"data_root": str(tmp_path / "data"), "ckpt_root": str(tmp_path / "ck")}),
+                   encoding="utf-8")
+    assert P.main(["--config", str(cfg), "--arm", "probe_last", "--device", "cpu"]) == 0
+    assert Path(seen["root"]) == tmp_path / "data" / "features" / "clip"
