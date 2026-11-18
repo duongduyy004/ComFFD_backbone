@@ -40,6 +40,7 @@ BATCH = 4096
 MAX_EPOCHS = 50
 PATIENCE = 5
 _EVAL_GUARD = {"ffpp_test": "ffpp_test", "celebdf": "celebdf"}
+SLOT_RAM_MAX = 2 * 1024**3  # byte fp16 tối đa nạp slot vào RAM (probe_multi train ≈ 1.3 GB; probe_gate dùng memmap)
 
 
 def _select_done_hook() -> None:
@@ -84,35 +85,72 @@ class ProbeHead(nn.Module):
         return torch.softmax(self.w, 0).detach().cpu().numpy() if self.gate else None
 
 
-def _norm_stats(cls, slots, chunk: int = 8192):
-    """mean/std float64 [n_slots, D] trên train, tính theo khối từ memmap; std < 1e-6 -> 1."""
+def _check_cache_consistent(feat_dir) -> None:
+    """Đọc meta.json (không đọc dữ liệu) của 4 dataset: commit, transform, params.json, số tầng, dim phải trùng; manifest
+    FF++ trùng giữa train/val/ffpp_test. Lệch (vd chạy --datasets từng phần sau khi đổi transform) -> ValueError."""
+    metas = {}
+    for ds in ("train", "val", "ffpp_test", "celebdf"):
+        p = Path(feat_dir) / ds / "meta.json"
+        if not p.exists():
+            raise FileNotFoundError(f"cache chưa hoàn tất: thiếu {p}")
+        metas[ds] = json.loads(p.read_text(encoding="utf-8"))
+    bad = [k for k in ("commit", "transform_id", "params_json_sha256", "num_layers", "dim")
+           if len({json.dumps(m.get(k)) for m in metas.values()}) > 1]
+    if len({metas[d].get("manifest_sha256") for d in ("train", "val", "ffpp_test")}) > 1:
+        bad.append("manifest_sha256 (FF++)")
+    if bad:
+        raise ValueError(f"cache không nhất quán giữa các dataset ở {bad}; chạy lại ffd.features cho đủ 4 dataset")
+
+
+def _slot_source(cls, slots, max_bytes: int = SLOT_RAM_MAX, chunk: int = 4096):
+    """(nguồn, sl). Slot chọn nhỏ hơn max_bytes -> nạp fp16 [N, n_slots, D] vào RAM một lần, sl = None (tránh đọc lại
+    cả 25 slot từ đĩa mỗi epoch). Lớn hơn (vd probe_gate) -> giữ memmap, sl = list(slots)."""
     s = list(slots)
-    n, tot, tot2 = 0, 0.0, 0.0
-    for i in range(0, len(cls), chunk):
-        x = np.asarray(cls[i:i + chunk][:, s], dtype=np.float64)
-        n, tot, tot2 = n + len(x), tot + x.sum(0), tot2 + (x * x).sum(0)
+    if len(cls) * len(s) * cls.shape[2] * 2 > max_bytes:
+        return cls, s
+    return np.concatenate([np.asarray(cls[i:i + chunk][:, s]) for i in range(0, len(cls), chunk)]), None
+
+
+def _rows(src, ii, sl) -> np.ndarray:
+    x = src[ii]
+    return x if sl is None else x[:, sl]
+
+
+def _norm_stats(src, sl, chunk: int = 1024):
+    """mean/std [n_slots, D] trên train, hai lượt theo khối float64 (tránh triệt tiêu E[x²] − mean²);
+    std < 1e-6 · max(1, |mean|) -> 1. Không hữu hạn -> ValueError."""
+    n = len(src)
+    tot = sum(_rows(src, slice(i, i + chunk), sl).astype(np.float64).sum(0) for i in range(0, n, chunk))
     mean = tot / n
-    std = np.sqrt(np.maximum(tot2 / n - mean * mean, 0.0))
-    std[std < 1e-6] = 1.0
+    if not np.isfinite(mean).all():
+        raise ValueError("đặc trưng train không hữu hạn (NaN/inf trong cache)")
+    sq = sum(np.square(_rows(src, slice(i, i + chunk), sl).astype(np.float64) - mean).sum(0)
+             for i in range(0, n, chunk))
+    std = np.sqrt(sq / n)
+    if not (np.isfinite(mean).all() and np.isfinite(std).all()):
+        raise ValueError("đặc trưng train không hữu hạn (NaN/inf trong cache)")
+    std[std < 1e-6 * np.maximum(1.0, np.abs(mean))] = 1.0
     return mean.astype(np.float32), std.astype(np.float32)
 
 
-def _batch(cls, ii, slots, mean, std, device) -> torch.Tensor:
-    x = np.asarray(cls[ii], dtype=np.float32)[:, list(slots)]
-    return torch.from_numpy((x - mean) / std).to(device)
+def _batch(src, ii, sl, mean, std, device) -> torch.Tensor:
+    x = _rows(src, ii, sl).astype(np.float32)
+    x -= mean
+    x /= std
+    return torch.from_numpy(x).to(device)
 
 
 @torch.no_grad()
-def _predict(head, cls, slots, mean, std, device) -> np.ndarray:
+def _predict(head, src, sl, mean, std, device) -> np.ndarray:
     head.eval()
-    out = [head(_batch(cls, np.arange(i, min(i + BATCH, len(cls))), slots, mean, std, device)).float().cpu().numpy()
-           for i in range(0, len(cls), BATCH)]
+    out = [head(_batch(src, np.arange(i, min(i + BATCH, len(src))), sl, mean, std, device)).float().cpu().numpy()
+           for i in range(0, len(src), BATCH)]
     return np.concatenate(out).astype(np.float64)
 
 
-def _fit(tr, y_tr, va, y_va, slots, mean, std, gate, wd, seed, device, log):
+def _fit(tr, tr_sl, y_tr, va, va_sl, y_va, mean, std, gate, wd, seed, device, log):
     torch.manual_seed(seed)
-    head = ProbeHead(len(slots), tr.shape[2], gate).to(device)
+    head = ProbeHead(mean.shape[0], mean.shape[1], gate).to(device)
     opt = torch.optim.AdamW(head.parameters(), lr=LR, weight_decay=wd)
     g = torch.Generator().manual_seed(seed)
     yt = torch.from_numpy(y_tr.astype(np.float32))
@@ -122,14 +160,16 @@ def _fit(tr, y_tr, va, y_va, slots, mean, std, gate, wd, seed, device, log):
         perm, tot = torch.randperm(len(tr), generator=g).numpy(), 0.0
         for b in range(0, len(tr), BATCH):
             ii = np.sort(perm[b:b + BATCH])
-            loss = nn.functional.binary_cross_entropy_with_logits(head(_batch(tr, ii, slots, mean, std, device)),
+            loss = nn.functional.binary_cross_entropy_with_logits(head(_batch(tr, ii, tr_sl, mean, std, device)),
                                                                   yt[ii].to(device))
             opt.zero_grad()
             loss.backward()
             opt.step()
             tot += float(loss.detach()) * len(ii)
-        z = _predict(head, va, slots, mean, std, device)
+        z = _predict(head, va, va_sl, mean, std, device)
         bce = _bce(z, y_va)
+        if not np.isfinite(bce):
+            raise ValueError(f"BCE val không hữu hạn (wd {wd}, epoch {epoch}); kiểm cache")
         log.append({"wd": wd, "epoch": epoch, "train_loss": tot / len(tr), "val_bce": bce,
                     "val_auc_frame": stats.auc(y_va, z)})
         if bce < best:
@@ -149,6 +189,7 @@ def _run_name(arm: str, seed: int, layer) -> str:
 def run_probe(feat_dir, ckpt_root, arm: str, *, seed: int = 0, layer: int | None = None, device="cpu",
               force: bool = False) -> Path:
     device = torch.device(device)
+    _check_cache_consistent(feat_dir)
     allow_read("train", "ffpp_train")
     tr, tr_idx, tr_meta = load_features(feat_dir, "train")
     allow_read("train", "ffpp_val")
@@ -168,11 +209,13 @@ def run_probe(feat_dir, ckpt_root, arm: str, *, seed: int = 0, layer: int | None
     y_tr, y_va = tr_idx.label.to_numpy(int), va_idx.label.to_numpy(int)
     if len(np.unique(y_va)) < 2 or len(np.unique(y_tr)) < 2:
         raise ValueError("train hoặc val chỉ có một lớp")
-    mean, std = _norm_stats(tr, slots)
+    tr_src, tr_sl = _slot_source(tr, slots)
+    va_src, va_sl = _slot_source(va, slots)
+    mean, std = _norm_stats(tr_src, tr_sl)
     gate = arm == "probe_gate"
     log, best = [], None
     for wd in WD_GRID:  # tăng dần; chỉ thay khi BCE val nhỏ hơn hẳn -> hòa giữ wd nhỏ hơn
-        head, bce, ep = _fit(tr, y_tr, va, y_va, slots, mean, std, gate, wd, seed, device, log)
+        head, bce, ep = _fit(tr_src, tr_sl, y_tr, va_src, va_sl, y_va, mean, std, gate, wd, seed, device, log)
         if best is None or bce < best[1]:
             best = (wd, bce, ep, head)
     wd_sel, bce_sel, ep_sel, head = best
@@ -189,7 +232,8 @@ def run_probe(feat_dir, ckpt_root, arm: str, *, seed: int = 0, layer: int | None
             allow_read("eval", _EVAL_GUARD[ds])  # chỉ sau khi đã chốt wd
             cls, idx, meta = load_features(feat_dir, ds)
         df = idx.copy()
-        df["logit"] = _predict(head, cls, slots, mean, std, device)
+        src, sl = (va_src, va_sl) if ds == "val" else _slot_source(cls, slots)
+        df["logit"] = _predict(head, src, sl, mean, std, device)
         write_parquet_atomic(df[_SCORE_COLS].reset_index(drop=True), run / f"scores_{ds}.parquet")
         res[ds] = frame_block(df, int(meta["n_videos_dropped"]))
     info = {"arm": arm, "seed": seed, "layer": layer, "slots": list(slots), "constants": constants,

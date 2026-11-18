@@ -129,3 +129,40 @@ def test_layer_all_writes_table(tmp_path, monkeypatch):
     md = (tmp_path / "ck" / "probe_layers.md").read_text(encoding="utf-8")
     rows = [l for l in md.splitlines() if l.startswith("| ") and l[2:3].isdigit()]
     assert len(rows) == 24 and "chỉ mô tả" in md
+
+
+def test_slot_source_preloads_small_selection():
+    cls = np.random.default_rng(0).normal(size=(50, 25, 8)).astype(np.float16)
+    src, sl = P._slot_source(cls, (7, 11), max_bytes=10**9)
+    assert isinstance(src, np.ndarray) and src.shape == (50, 2, 8) and sl is None
+    assert np.array_equal(src, cls[:, [7, 11]])
+    src2, sl2 = P._slot_source(cls, (7, 11), max_bytes=10)
+    assert src2 is cls and sl2 == [7, 11]
+
+
+def test_norm_stats_matches_numpy_multichunk():
+    rng = np.random.default_rng(0)
+    cls = (300 + rng.normal(scale=0.5, size=(3000, 25, 8))).astype(np.float16)
+    mean, std = P._norm_stats(cls, tuple(range(24)), chunk=256)
+    ref = cls[:, :24].astype(np.float64)
+    assert np.allclose(mean, ref.mean(0), atol=1e-4) and np.allclose(std, ref.std(0), rtol=1e-3)
+
+
+def test_inconsistent_caches_refused(tmp_path):
+    fd = make_feat_dir(tmp_path / "f")
+    p = fd / "celebdf" / "meta.json"
+    m = json.loads(p.read_text(encoding="utf-8"))
+    m["transform_id"] = "khac"
+    p.write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError, match="không nhất quán"):
+        P.run_probe(fd, tmp_path / "ck", "probe_last")
+    assert not (tmp_path / "ck" / "probe_last_s0").exists()
+
+
+def test_nonfinite_cache_clear_error(tmp_path):
+    fd = make_feat_dir(tmp_path / "f")
+    x = np.load(fd / "train" / "cls.npy")
+    x[0, 24, 0] = np.inf
+    np.save(fd / "train" / "cls.npy", x)
+    with pytest.raises(ValueError, match="không hữu hạn"):
+        P.run_probe(fd, tmp_path / "ck", "probe_last")

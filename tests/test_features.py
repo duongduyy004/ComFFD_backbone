@@ -112,3 +112,20 @@ def test_main_cli(tmp_path, data_root, monkeypatch):
                    "--batch-size", "4", "--device", "cpu"]) == 0
     for ds in ("val", "celebdf"):
         assert (tmp_path / "f" / "local" / ds / "meta.json").is_file()
+
+
+def test_verify_close_relative_tolerance():  # fp16 làm tròn ~0.03 ở |x| ~ 40: không được báo lỗi giả
+    ref = np.full((4, 25, 32), 40.015, np.float32)
+    got = ref.astype(np.float16).astype(np.float32)
+    out = F._verify_close(got, ref)
+    assert out["max_abs_pooler"] > 1e-2 and out["max_abs_ref"] == pytest.approx(40.015, rel=1e-4)
+    with pytest.raises(ValueError, match="lệch"):
+        F._verify_close(got + 1.0, ref)
+
+
+def test_nonfinite_features_refused(tmp_path, data_root, monkeypatch):
+    real = F.cls_slots
+    monkeypatch.setattr(F, "cls_slots", lambda vit, x: real(vit, x) * float("inf"))
+    with pytest.raises(ValueError, match="không hữu hạn"):
+        _extract(data_root, tmp_path)
+    assert not (tmp_path / "local" / "val" / "meta.json").exists()

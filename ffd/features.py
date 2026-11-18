@@ -109,11 +109,19 @@ def _verify(vit, paths, arr, device) -> dict:
     n = min(VERIFY_N, len(paths))
     ref = _forward(vit, paths[:n], n, 0, device)
     got = np.asarray(arr[:n], dtype=np.float32)
-    max_abs_pooler = float(np.abs(got[:, -1] - ref[:, -1]).max())
+    return {"n": n, **_verify_close(got, ref)}
+
+
+def _verify_close(got: np.ndarray, ref: np.ndarray) -> dict:
+    """So slot pooler cache (fp16) với tính lại (fp32): lệch <= VERIFY_TOL * max(1, |ref|) (tương đối, vì sai số làm
+    tròn fp16 tăng theo |x|). Lệch hơn -> ValueError."""
+    d = np.abs(got[:, -1] - ref[:, -1])
+    if (d > VERIFY_TOL * np.maximum(1.0, np.abs(ref[:, -1]))).any():
+        raise ValueError(f"kiểm tra cache lệch: max |pooler cache - tính lại| = {float(d.max())} vượt "
+                         f"{VERIFY_TOL} x max(1, |giá trị|)")
     hid = np.abs(got[:, :-1] - ref[:, :-1]).max() / max(float(np.abs(ref[:, :-1]).max()), 1e-6)
-    if max_abs_pooler >= VERIFY_TOL:
-        raise ValueError(f"kiểm tra cache lệch: max |pooler cache - tính lại| = {max_abs_pooler} >= {VERIFY_TOL}")
-    return {"n": n, "max_abs_pooler": max_abs_pooler, "max_rel_hidden": float(hid)}
+    return {"max_abs_pooler": float(d.max()), "max_abs_ref": float(np.abs(ref[:, -1]).max()),
+            "max_rel_hidden": float(hid)}
 
 
 def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_workers, chunk, device, max_chunks):
@@ -151,7 +159,11 @@ def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_work
             if max_chunks is not None and k >= max_chunks:
                 return
             end = min(n_done + chunk, len(df))
-            arr[n_done:end] = _forward(vit, paths[n_done:end], batch_size, num_workers, device).astype(np.float16)
+            x = _forward(vit, paths[n_done:end], batch_size, num_workers, device)
+            x16 = x.astype(np.float16)
+            if not (np.isfinite(x).all() and np.isfinite(x16).all()):  # NaN/inf, hoặc tràn fp16 (> 65504)
+                raise ValueError(f"{ds}: đặc trưng không hữu hạn (hoặc tràn fp16) ở dòng {n_done}..{end - 1}")
+            arr[n_done:end] = x16
             arr.flush()
             n_done, k = end, k + 1
             write_json_atomic({"key": key, "n_done": n_done}, st_path)  # chỉ sau khi khối đã flush
