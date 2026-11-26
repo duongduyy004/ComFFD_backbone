@@ -154,9 +154,8 @@ def test_main_cli_config(tmp_path):
 def test_verdict_warns_for_non_default_pair(tmp_path):
     _two_runs(tmp_path)
     R.compare_real_fp(tmp_path, "x", "y", B=20)
-    assert "chỉ có nghĩa cho cặp raw_aug_filt → raw_rep_filt" in (tmp_path / "realfp_x__y.md").read_text(encoding="utf-8")
-    _write_run(tmp_path, "raw_aug_filt", *_sets(np.random.default_rng(1), 0.0, CELEB))
-    _write_run(tmp_path, "raw_rep_filt", *_sets(np.random.default_rng(2), 0.0, CELEB))
-    R.compare_real_fp(tmp_path, "raw_aug_filt", "raw_rep_filt", B=20)
-    md = (tmp_path / "realfp_raw_aug_filt__raw_rep_filt.md").read_text(encoding="utf-8")
-    assert "chỉ có nghĩa cho cặp" not in md
+    assert "chỉ có nghĩa cho cặp raw_aug → raw_rep" in (tmp_path / "realfp_x__y.md").read_text(encoding="utf-8")
+    _write_run(tmp_path, "raw_aug", *_sets(np.random.default_rng(3), 0.0, CELEB))
+    _write_run(tmp_path, "raw_rep", *_sets(np.random.default_rng(4), 0.0, CELEB))
+    R.compare_real_fp(tmp_path, "raw_aug", "raw_rep", B=20)
+    assert "chỉ có nghĩa cho cặp" not in (tmp_path / "realfp_raw_aug__raw_rep.md").read_text(encoding="utf-8")

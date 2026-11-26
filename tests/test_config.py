@@ -12,11 +12,11 @@ def wr(tmp_path, text="data_root: D:/x\n"):
     return p
 
 
-def test_defaults_v2(tmp_path):
+def test_defaults(tmp_path):
     c = load_train_config(wr(tmp_path))
     assert (c.model_name, c.max_epochs, c.patience, c.p_jpeg, c.jpeg_q, c.arm) == \
         ("openai/clip-vit-large-patch14", 30, 5, 0.5, 95, "raw")
-    assert run_name_of(c) == "raw" and ARMS == ("raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc")
+    assert run_name_of(c) == "raw" and ARMS == ("raw", "raw_aug", "raw_rep")
     assert isinstance(c.data_root, Path) and isinstance(c.ckpt_root, Path)
     assert c.ckpt_root == Path("checkpoints/clip") and c.lora_targets == ("q_proj", "v_proj")
     assert c.tap_layers == () and c.batch_size == 32 and c.seed == 0
@@ -47,14 +47,14 @@ def test_validation(tmp_path):
             load_train_config(wr(tmp_path), {k: v})
 
 
-def test_extra_arm_valid_but_not_in_main(tmp_path):
-    from ffd.config import ALL_ARMS, DROP_SEAM_ARMS, FILTER_ARMS, LOC_ARMS
-    assert ARMS == ("raw", "raw_aug", "raw_aug_filt", "raw_aug_filt_loc")
-    assert ALL_ARMS == ARMS + ("raw_rep_filt",)
-    assert "raw_rep_filt" in FILTER_ARMS and DROP_SEAM_ARMS == ("raw_rep_filt",) and "raw_rep_filt" not in LOC_ARMS
-    assert load_train_config(wr(tmp_path), {"arm": "raw_rep_filt"}).arm == "raw_rep_filt"
-    with pytest.raises(ValueError):
-        load_train_config(wr(tmp_path), {"arm": "raw_rep_flt"})
+def test_arms(tmp_path):
+    from ffd.config import AUG_ARMS
+    assert AUG_ARMS == ("raw_aug", "raw_rep")
+    for arm in ARMS:
+        assert load_train_config(wr(tmp_path), {"arm": arm}).arm == arm
+    for old in ("raw_aug_filt", "raw_aug_filt_loc", "raw_rep_filt"):  # arm cũ đã gỡ (còn ở tag detector_v1)
+        with pytest.raises(ValueError):
+            load_train_config(wr(tmp_path), {"arm": old})
 
 
 def test_hash_ignores_paths_and_workers(tmp_path):

@@ -1,6 +1,6 @@
-"""CLI: python -m ffd.cli {main,train,eval,compare,smoke}.
+"""CLI: python -m ffd.cli {main,train,eval,smoke,diagnose}.
 
-Thứ tự dùng: smoke -> main (4 arm) (không còn pilot từ 16/11; lr, p_jpeg lấy từ config).
+Thứ tự dùng: smoke -> main (3 arm raw, raw_aug, raw_rep; lr, p_jpeg lấy từ config).
 Import nặng (torch, model) để trễ trong từng lệnh, nên lỗi tham số thất bại nhanh.
 CLI không truyền allow_cpu (train thật cần CUDA). `--set k=v` đi qua load_train_config (khóa lạ bị từ chối).
 Trạng thái: chưa chạy thử trên GPU.
@@ -49,8 +49,8 @@ def _cmd_main(a):
 
     cfg = _load_cfg(a.config, a.set)
     try:
-        print(experiment.run_main(cfg))
-    except FileNotFoundError as e:
+        print(experiment.run_main(cfg, B=a.B))
+    except (FileNotFoundError, ValueError) as e:
         raise SystemExit(f"Lỗi main: {e}") from e
 
 
@@ -92,23 +92,6 @@ def _cmd_eval(a):
         raise SystemExit(f"Lỗi eval: {e}") from e
 
 
-def _cmd_compare(a):
-    from pathlib import Path
-
-    from .compare import PAIRS, compare_pair, compare_runs
-
-    root = Path(a.ckpt_root)
-    try:
-        for x, y in (("raw", "raw_aug"), *PAIRS):
-            missing = [m for m in (x, y) if not (root / m / "result.json").exists()]
-            if missing:
-                print(f"Bỏ qua cặp {x} vs {y}: thiếu result.json của {', '.join(missing)}")
-                continue
-            print(compare_runs(root) if (x, y) == ("raw", "raw_aug") else compare_pair(root, x, y))
-    except (ValueError, FileNotFoundError) as e:
-        raise SystemExit(f"Lỗi compare: {e}") from e
-
-
 def _cmd_diagnose(a):
     from .diagnose import diagnose
 
@@ -147,8 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
         s.set_defaults(fn=fn)
         return s
 
-    with_config("main", _cmd_main, "train + eval 4 arm raw, raw_aug, raw_aug_filt, raw_aug_filt_loc (lr/p_jpeg từ config; arm đã có result.json thì bỏ qua) "
-                "-> compare.json + 4 file compare_<a>__<b>.json, summary.md")
+    m = with_config("main", _cmd_main, "train + eval raw, raw_aug, raw_rep (arm đã có result.json thì bỏ qua) "
+                    "-> videoboot, realfp, summary.{json,md} theo tiêu chí ghi trước")
+    m.add_argument("--B", type=int, default=4000, help="số vòng bootstrap")
     t = with_config("train", _cmd_train, "train một run (<ckpt_root>/<run_name>)")
     t.add_argument("--resume", action="store_true", help="chạy tiếp từ last.pt")
     t.add_argument("--force", action="store_true", help="xóa kết quả cũ của run rồi chạy lại")
@@ -162,11 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="danh sách cách nhau bởi dấu phẩy (val,ffpp_test,celebdf); run pilot cũ chỉ được val")
     e.add_argument("--force", action="store_true", help="ghi đè result.json đã có")
     e.set_defaults(fn=_cmd_eval)
-
-    c = sp.add_parser("compare", parents=[common], help="so sánh raw vs raw_aug -> compare.json, và các cặp (raw,filt) (raw,filt_loc) (raw_aug,filt) (filt,filt_loc) "
-                  "có đủ hai run -> compare_<a>__<b>.json (cặp thiếu run: bỏ qua, có ghi chú)")
-    c.add_argument("--ckpt-root", required=True)
-    c.set_defaults(fn=_cmd_compare)
 
     g = sp.add_parser("diagnose", parents=[common], help="chẩn đoán raw_aug so với raw -> <ckpt_root>/diagnose/")
     g.add_argument("--ckpt-root", required=True)

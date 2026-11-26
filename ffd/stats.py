@@ -1,4 +1,4 @@
-"""Thống kê báo cáo: điểm theo video, AUC, bootstrap CI (result.json/compare.json dùng mức frame: mỗi frame một
+"""Thống kê báo cáo: điểm theo video, AUC, bootstrap CI (result.json dùng mức frame: mỗi frame một
 nhóm), DeLong ghép cặp.
 
 DeLong nhanh (Sun & Xu 2014): với m mẫu dương, n mẫu âm, midrank tx (dương), ty (âm), tz (gộp):

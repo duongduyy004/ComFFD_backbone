@@ -172,60 +172,10 @@ def test_resolve_commit_from_cache_path(tmp_path, monkeypatch):
     assert resolve_commit(str(tmp_path)).startswith("local:")
 
 
-# ---- head vị trí (arm raw_aug_filt_loc) ----
-def test_detector_params_old_arms(tiny):
-    """raw/raw_aug/raw_aug_filt: không có loc_head; tham số train = LoRA + head như trước; trunk không trả tokens."""
-    for arm in ("raw", "raw_aug", "raw_aug_filt"):
+def test_detector_params_all_arms(tiny):
+    """Mọi arm: tham số train = LoRA + head; đầu ra chỉ có logit."""
+    for arm in ("raw", "raw_aug", "raw_rep"):
         d = Detector(cfg(arm=arm), vision_config=tiny["vision_config"])
-        assert d.loc_head is None
         names = [n for n, p in d.named_parameters() if p.requires_grad]
         assert names and all("lora_" in n or n.startswith("head.") for n in names)
-        out = d(torch.randn(1, 3, 224, 224))
-        assert set(out) == {"logit"}
-        assert "tokens" not in d.trunk(torch.randn(1, 3, 224, 224))
-
-
-def test_detector_loc_outputs(tiny):
-    d = Detector(cfg(arm="raw_aug_filt_loc"), vision_config=tiny["vision_config"])
-    out = d(torch.randn(2, 3, 224, 224))
-    assert out["logit"].shape == (2,) and out["patch_logit"].shape == (2, 16, 16)
-    assert out["patch_logit"].dtype == torch.float32
-    sd = d.trainable_state_dict()
-    assert {"loc_head.fc.weight", "loc_head.fc.bias"} <= set(sd)
-    d2 = Detector(cfg(arm="raw_aug_filt_loc"), vision_config=tiny["vision_config"])
-    d2.load_trainable(sd)
-    with pytest.raises(KeyError):  # state của arm cũ thiếu loc_head -> strict
-        d2.load_trainable({k: v for k, v in sd.items() if not k.startswith("loc_head.")})
-
-
-def test_trunk_tokens_row_major(tiny):
-    m = ClipLoraTrunk(**tiny, tap_layers=())
-    x = torch.randn(1, 3, 224, 224)
-    out = m(x, patch_tokens=True)
-    ref = m.base(pixel_values=x).last_hidden_state[:, 1:]
-    assert out["tokens"].shape == (1, 256, 32) and not torch.allclose(out["tokens"], ref)
-    assert torch.allclose(out["tokens"], m.post_layernorm(ref))
-    head = Detector(cfg(arm="raw_aug_filt_loc"), vision_config=tiny["vision_config"]).loc_head
-    pl = head(out["tokens"], 16)
-    assert torch.allclose(pl[0, 3, 5], head.fc(out["tokens"][0, 3 * 16 + 5]).squeeze())  # hàng = p // G, cột = p % G
-
-
-def test_loc_loss_values():
-    from ffd.heads.loc import loc_loss
-
-    z = torch.zeros(2, 2, 2, requires_grad=True)
-    t = torch.tensor([[[1.0, 0.0], [0.5, 0.0]], [[1.0, 1.0], [1.0, 1.0]]])
-    none = loc_loss(z, t, torch.tensor([False, False]))
-    assert float(none.detach()) == 0.0
-    none.backward()  # vẫn nối autograd
-    # logit 0 -> BCE = ln2 ở mọi patch, bất kể nhãn mềm
-    ln2 = float(torch.log(torch.tensor(2.0)))
-    assert float(loc_loss(z, t, torch.tensor([True, False])).detach()) == pytest.approx(ln2)
-    # tính tay: ảnh 0, logit [[2,-1],[0,0]] với nhãn [[1,0],[0.5,0]]
-    lg = torch.tensor([[[2.0, -1.0], [0.0, 0.0]], [[5.0, 5.0], [5.0, 5.0]]])
-    sp = lambda v: float(torch.nn.functional.softplus(torch.tensor(v)))
-    img0 = (sp(-2.0) + sp(-1.0) + ln2 + ln2) / 4  # BCE(z,1)=softplus(-z); BCE(z,0)=softplus(z); z=0 -> ln2
-    assert float(loc_loss(lg, t, torch.tensor([True, False]))) == pytest.approx(img0, rel=1e-5)
-    # trung bình theo ảnh (không theo patch): ảnh 1 toàn 1 với logit 5
-    img1 = sp(-5.0)
-    assert float(loc_loss(lg, t, torch.tensor([True, True]))) == pytest.approx((img0 + img1) / 2, rel=1e-5)
+        assert set(d(torch.randn(1, 3, 224, 224))) == {"logit"}

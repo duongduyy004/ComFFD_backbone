@@ -17,11 +17,14 @@ def test_cli_parses_commands():
                  ["train", "--config", "c.yaml", "--resume"], ["train", "--config", "c.yaml", "--force"],
                  ["eval", "--run", "r"], ["eval", "--run", "r", "--data-root", "d"],
                  ["eval", "--run", "r", "--datasets", "val", "--force", "--no-progress"],
-                 ["compare", "--ckpt-root", "ck"], ["smoke", "--config", "c.yaml", "--steps", "5"]):
+                 ["smoke", "--config", "c.yaml", "--steps", "5"]):
         a = p.parse_args(argv)
         assert a.cmd == argv[0] and callable(a.fn)
     with pytest.raises(SystemExit):
         p.parse_args(["report", "--runs-root", "r"])  # lệnh cũ đã bỏ
+    for old in (["compare", "--ckpt-root", "ck"], ["main-v2", "--config", "c.yaml"]):
+        with pytest.raises(SystemExit):
+            p.parse_args(old)
 
 
 def test_no_pilot_command():
@@ -85,7 +88,7 @@ def test_smoke_dump_samples(data_root, tmp_path):
 
     for kind in ("rep", "seam"):
         assert dump_samples(data_root, kind, tmp_path) == N_SAMPLES
-    assert len(list(tmp_path.glob("rep_*.png"))) == len(list(tmp_path.glob("seam_*.png"))) == 16
+    assert len(list(tmp_path.glob("rep_*.jpg"))) == len(list(tmp_path.glob("seam_*.jpg"))) == 16
 
 
 def test_eval_refuses_overwrite_without_force(tmp_path):

@@ -10,7 +10,7 @@ Quy ước:
 - scores_{dataset}.parquet: video_id, frame_idx, label, method, logit (dataset ∈ val, ffpp_test, celebdf).
 - Dataset không nằm trong `datasets` -> không có khóa trong result.json; celebdf thiếu dữ liệu ->
   {"skipped": "không có <data_root>/celebdf/manifest.parquet"}.
-- run_info có `arm_constants` / `aug_stats` (arm filt) -> chép nguyên vào result.json.
+- run_info có `aug_stats` (arm raw_aug / raw_rep) -> chép nguyên vào result.json.
 - result.md ghi nguyên tử TRƯỚC result.json (có result.json thì đã có result.md).
 Trạng thái: chưa chạy thử trên GPU.
 """
@@ -25,7 +25,6 @@ import torch
 from . import metrics, tables
 from .config import TrainConfig, config_hash, run_name_of
 from .data import ffpp as D
-from .data.augfilter import check_arm_constants
 from .guards import allow_read
 from .io_utils import write_json_atomic, write_parquet_atomic
 from .model import Detector
@@ -75,7 +74,6 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
     cfg = _cfg_from_info(info, data_root)
     if config_hash(cfg) != info.get("config_hash"):
         raise ValueError(f"config dựng lại có hash {config_hash(cfg)} != config_hash run_info {info.get('config_hash')}")
-    check_arm_constants(cfg.arm, info, "không chấm điểm (xóa thư mục run hoặc train lại)")  # cli eval chạy riêng
     rec = info.get("data_hashes")
     if not rec:
         raise ValueError("run_info thiếu data_hashes; không kiểm được dữ liệu có đổi không")
@@ -117,9 +115,8 @@ def evaluate_run(run, *, data_root=None, datasets=DATASETS, vision_config=None, 
         "best_epoch": int(done["best_epoch"]), "epochs_run": int(done["epochs_run"]),
         "stopped_early": bool(done["stopped_early"]), "total_steps": int(done["total_steps"]),
     }
-    for k in ("arm_constants", "aug_stats"):  # arm filt: ghi lại hằng số và thống kê lọc của lúc train
-        if k in info:
-            res[k] = info[k]
+    if "aug_stats" in info:
+        res["aug_stats"] = info["aug_stats"]
     for ds in datasets:
         if ds == "celebdf" and not celeb_ok:
             res[ds] = {"skipped": f"không có {cfg.data_root}/celebdf/manifest.parquet"}

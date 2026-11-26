@@ -1,12 +1,12 @@
-"""So sánh tỉ lệ real bị đoán fake của hai run ở ngưỡng chọn trên FF++ val (spec v5, arm raw_rep_filt).
+"""So sánh tỉ lệ real bị đoán fake của hai run ở ngưỡng chọn trên FF++ val (tiêu chí R2: raw_aug → raw_rep).
 
 Ngưỡng t của mỗi arm: TPR >= 0.95 trên fake val của chính arm đó; đoán fake <=> logit >= t. Ngưỡng cố định, không
 tính lại trong bootstrap; không dùng FF++ test / Celeb-DF để chọn gì.
 Chỉ số chính: tỉ lệ frame real Celeb-DF bị đoán fake, diff = b - a, CI95 paired bootstrap trên video real
 (tổng frame bị gắn fake / tổng frame), B = 4000, seed 0. AUC video: bootstrap phân tầng theo lớp.
 Đọc `<ckpt_root>/<arm>/scores_{val,ffpp_test,celebdf}.parquet`; ghi `realfp_<a>__<b>.json` và `.md` vào ckpt_root.
-Dùng: python -m ffd.realfp --config config.yaml --a raw_aug_filt --b raw_rep_filt
-Trạng thái: chưa chạy thử trên dữ liệu thật của raw_rep_filt.
+Dùng: python -m ffd.realfp --config config.yaml --a raw_aug --b raw_rep (main tự gọi)
+Trạng thái: chưa chạy thử trên dữ liệu thật.
 """
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from .io_utils import write_json_atomic
 DATASETS = ("val", "ffpp_test", "celebdf")
 TPR = 0.95
 SEED = 0
-DEFAULT_PAIR = ("raw_aug_filt", "raw_rep_filt")  # a có seam, b bỏ seam: cặp mà verdict được định nghĩa
-NOTE = ("Exploratory: 1 seed/arm, không prereg (ngoại lệ v2); tiêu chí đặt trước trong spec v5. CI bootstrap theo "
+DEFAULT_PAIR = ("raw_aug", "raw_rep")  # a có seam, b bỏ seam: cặp mà verdict được định nghĩa
+NOTE = ("Exploratory: 1 seed/arm, không prereg; tiêu chí đặt trước trong ke_hoach_run_v2_2026-11-26.md. CI bootstrap theo "
         "video chỉ phản ánh lấy mẫu video test, không phản ánh dao động giữa seed.")
 VERDICT_TEXT = {
     "seam_hurts_real": "seam góp phần làm real bị đoán fake (exploratory); bắt buộc thêm seed 1, 2 cho cả hai arm",

@@ -1,4 +1,4 @@
-"""E2E qua CLI trên CPU: main 4 arm -> compare -> summary.md. Trạng thái: chưa chạy thử trên GPU.
+"""E2E qua CLI trên CPU: main 3 arm -> videoboot, realfp, summary. Trạng thái: chưa chạy thử trên GPU.
 Dữ liệu tổng hợp, CLIP tí hon ngẫu nhiên (MINH HỌA); số AUC không có ý nghĩa."""
 import functools
 import json
@@ -8,7 +8,6 @@ import pytest
 pytest.importorskip("torch")
 
 from ffd import cli, experiment, progress  # noqa: E402
-from ffd.compare import NOTE, PAIRS  # noqa: E402
 from ffd.config import ARMS  # noqa: E402
 
 
@@ -23,26 +22,20 @@ def test_e2e_tiny(data_root, tiny, tmp_path, monkeypatch, capsys):
                  "lora_r: 4\nlora_alpha: 8\ngrad_checkpointing: false\nnum_workers: 0\n"
                  "lr: 1.0e-4\np_jpeg: 0.5\n", encoding="utf-8")
     common = ["--config", str(c), "--set", "max_epochs=1", "--no-progress"]
-    assert cli.main(["main", *common]) == 0
+    assert cli.main(["main", *common, "--B", "30"]) == 0
     for arm in ARMS:
         r = json.loads((ck / arm / "result.json").read_text(encoding="utf-8"))
         assert r["arm"] == arm and r["config"]["lr"] == 1e-4 and r["config"]["p_jpeg"] == 0.5
         assert {"val", "ffpp_test", "celebdf"} <= set(r)
+        assert ("aug_stats" in r) == (arm != "raw")
         md = (ck / arm / "result.md").read_text(encoding="utf-8")
         for ds in ("val", "ffpp_test", "celebdf"):
             assert f"| {ds} | {r[ds]['n_frames']} | {r[ds]['acc']:.4f} | {r[ds]['auc']:.4f} |" in md
-    assert not (ck / "pilot").exists()
-    comp = json.loads((ck / "compare.json").read_text(encoding="utf-8"))
-    assert comp["note"] == NOTE and "diff" in comp["ffpp_test"]
-    s = (ck / "summary.md").read_text(encoding="utf-8")
-    assert "| arm | dataset | ACC | AUC | PREC | RECALL | F1 |" in s and "p DeLong" in s
-    assert sum(x.startswith("| raw") and x.split("|")[2].strip() in ("val", "ffpp_test", "celebdf")
-               for x in s.splitlines()) == 12  # 4 arm x 3 dataset
-    for a, b in PAIRS:
-        c = json.loads((ck / f"compare_{a}__{b}.json").read_text(encoding="utf-8"))
-        assert c["note"] == NOTE and "diff" in c["ffpp_test"] and f"auc_{b}" in c["ffpp_test"]
-    assert len(list(ck.glob("compare_*__*.json"))) == 4
+    for f in ("videoboot.json", "realfp_raw__raw_aug.json", "realfp_raw_aug__raw_rep.json", "summary.json"):
+        assert (ck / f).is_file(), f
+    s = json.loads((ck / "summary.json").read_text(encoding="utf-8"))
+    assert set(s["decision"]) == {"R1_vs_R0", "R2_vs_R1", "run_R3"}
     assert "Tổng hợp main" in capsys.readouterr().out
-    # chạy lại: mọi run đã có result.json -> bỏ qua, không lỗi; summary.md ghi lại
-    assert cli.main(["main", *common]) == 0
+    # chạy lại: mọi run đã có result.json -> bỏ qua, không lỗi; summary ghi lại
+    assert cli.main(["main", *common, "--B", "30"]) == 0
     assert (ck / "summary.md").exists()

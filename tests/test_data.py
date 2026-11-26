@@ -1,8 +1,10 @@
-"""Test hợp đồng dữ liệu v2, TrainList cố định, transform 224. Dữ liệu MINH HỌA (synth_ffpp)."""
+"""Test hợp đồng dữ liệu (preprocessing v2: JPEG kích thước gốc), TrainList cố định, transform resize về 224.
+Dữ liệu MINH HỌA (synth_ffpp)."""
 import shutil
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ffd import io_utils  # noqa: E402
 from ffd.data.ffpp import aug_frames, data_hashes, dropped_videos, frames  # noqa: E402
 from ffd.data.trainset import TrainList  # noqa: E402
-from ffd.data.transforms import eval_transform, train_transform  # noqa: E402
+from ffd.data.transforms import eval_transform, to_size, train_transform  # noqa: E402
 from ffd.guards import LeakageError, allow_read  # noqa: E402
 
 
@@ -83,9 +85,35 @@ def test_trainlist_rejects_non_train_aug(data_root, tmp_path):
         TrainList(root, "raw_aug", 0, 0.5, 95)
 
 
-def test_transform_rejects_non_224():
+def test_synth_matches_v2_contract(data_root):
+    """Dữ liệu tổng hợp đúng hợp đồng v2: ảnh .jpg không vuông, w/h trong manifest khớp file, mask cùng kích thước."""
+    tr = frames(data_root, "ffpp", "train")
+    assert (tr.path.map(lambda p: p.suffix) == ".jpg").all() and (tr.w != tr.h).any()
+    for p, w, h in tr[["path", "w", "h"]].head(8).itertuples(index=False):
+        assert io_utils.read_image(p).shape[:2] == (h, w)
+    aug = aug_frames(data_root)
+    for p, mp in aug[["path", "mask_path"]].head(8).itertuples(index=False):
+        assert io_utils.read_image(p).shape[:2] == io_utils.read_image(mp).shape[:2]
+
+
+def test_to_size_interp():
+    rng = np.random.default_rng(0)
+    same = rng.integers(0, 255, (224, 224, 3), dtype=np.uint8)
+    assert to_size(same) is same  # dữ liệu v1 (224) đi qua nguyên vẹn
+    big = rng.integers(0, 255, (300, 240, 3), dtype=np.uint8)
+    assert np.array_equal(to_size(big), cv2.resize(big, (224, 224), interpolation=cv2.INTER_AREA))
+    for hw in ((238, 178), (180, 136)):  # có chiều < 224 -> CUBIC
+        im = rng.integers(0, 255, (*hw, 3), dtype=np.uint8)
+        assert np.array_equal(to_size(im), cv2.resize(im, (224, 224), interpolation=cv2.INTER_CUBIC))
+
+
+def test_transforms_resize_any_size():
+    img = np.random.default_rng(2).integers(0, 255, (238, 178, 3), dtype=np.uint8)
+    assert torch.equal(eval_transform(img), eval_transform(to_size(img)))
+    x, _, _ = train_transform(img, np.random.default_rng(0), 0.5, 95)
+    assert x.shape == (3, 224, 224)
     with pytest.raises(ValueError):
-        eval_transform(np.zeros((336, 336, 3), np.uint8))
+        eval_transform(np.zeros((224, 224), np.uint8))  # thiếu kênh màu
 
 
 def test_train_transform_p_jpeg(monkeypatch):
@@ -118,102 +146,31 @@ def test_guard_train_allows_aug_not_test():
             allow_read("train", w)
 
 
-# ---- arm filt/loc, nhãn patch (Task 2) ----
-G = 16
+# ---- 3 arm ----
+def test_arm_items_and_stats(data_root):
+    raw = TrainList(data_root, "raw", 0, 0.5, 95)
+    assert list(raw.items.columns) == ["path", "label", "source", "video_id"] and raw.aug_stats == {}
+    aug = TrainList(data_root, "raw_aug", 0, 0.5, 95)
+    n_seam = int((aug.items.source == "seam").sum())
+    assert aug.aug_stats == {"n_rep": int((aug.items.source == "rep").sum()), "n_seam": n_seam} and n_seam > 0
+    for t in (raw, aug):
+        assert set(t[0]) == set(t[len(t) - 1]) == {"image", "label", "source", "jpeg"}
 
 
-def _pool(mask_path, g=G):
-    m = (io_utils.read_image(mask_path).max(axis=2) > 0).astype(np.float32)
-    c = m.shape[0] // g
-    return m.reshape(g, c, g, c).mean(axis=(1, 3))
+def test_rep_arm_is_raw_aug_without_seam(data_root):
+    """raw_rep: mọi rep của manifest_aug (không lọc, không cân bằng), bỏ hết seam."""
+    t = TrainList(data_root, "raw_rep", 0, 0.5, 95)
+    u = TrainList(data_root, "raw_aug", 0, 0.5, 95)
+    assert set(t.items.source) == {"raw", "rep"} and list(t.items.columns) == ["path", "label", "source", "video_id"]
+    assert list(t.items.path) == list(u.items[u.items.source != "seam"].path)
+    assert t.aug_stats == {"n_seam_dropped": u.aug_stats["n_seam"], "n_rep": u.aug_stats["n_rep"], "n_seam": 0}
+    assert set(t[len(t) - 1]) == {"image", "label", "source", "jpeg"}
 
 
-def _loc(data_root, seed=0):
-    return TrainList(data_root, "raw_aug_filt_loc", seed, 0.0, 95, grid=G)
-
-
-def test_old_arms_unchanged(data_root):
-    for arm in ("raw", "raw_aug"):
-        t = TrainList(data_root, arm, 0, 0.5, 95)
-        assert list(t.items.columns) == ["path", "label", "source", "video_id"] and t.aug_stats == {}
-        assert set(t[0]) == {"image", "label", "source", "jpeg"}
-        assert set(t[len(t) - 1]) == {"image", "label", "source", "jpeg"}
-
-
-def test_filt_arm_applies_filter(data_root):
-    t = TrainList(data_root, "raw_aug_filt", 0, 0.5, 95)
-    assert "mask_path" in t.items.columns and set(t[0]) == {"image", "label", "source", "jpeg"}
-    st = t.aug_stats
-    assert st["tau_m"] == pytest.approx(0.05) and st["n_rep_kept"] > 0 and st["n_seam_after"] > 0
-    aug = aug_frames(data_root).set_index("path")
-    a = t.items[t.items.source != "raw"]
-    assert len(a) == st["n_rep_after"] + st["n_seam_after"]
-    assert (aug.loc[a.path, "r"] >= 0.75).all() and (aug.loc[a.path, "mask_frac_final"] >= st["tau_m"]).all()
-    assert t.items[t.items.source != "rep"].mask_path.isna().all()
-
-
-def test_rep_filt_arm_drops_seam_keeps_reps(data_root):
-    t = TrainList(data_root, "raw_rep_filt", 0, 0.5, 95)
-    u = TrainList(data_root, "raw_aug_filt", 0, 0.5, 95)
-    assert set(t.items.source) == {"raw", "rep"}
-    assert list(t.items[t.items.source == "rep"].path) == list(u.items[u.items.source == "rep"].path)
-    assert list(t.items[t.items.source == "raw"].path) == list(u.items[u.items.source == "raw"].path)
-    assert t.aug_stats == {**u.aug_stats, "n_seam_dropped": u.aug_stats["n_seam_after"]}
-    assert t.aug_stats["n_seam_dropped"] > 0
-    assert t.items[t.items.source == "rep"].mask_path.notna().all()
-    assert set(t[len(t) - 1]) == {"image", "label", "source", "jpeg"}  # không có nhãn patch
-
-
-def test_loc_item_targets(data_root):
-    t = _loc(data_root)
-    seen = set()
-    for i in range(len(t)):
-        it, row = t[i], t.items.iloc[i]
-        assert it["patch_target"].shape == (G, G) and it["patch_target"].dtype == torch.float32
-        if row.source == "rep":
-            assert it["has_loc"] is True and (it["patch_target"] > 0).any()
-            assert it["patch_target"].sum().item() == pytest.approx(
-                (io_utils.read_image(row.mask_path).max(axis=2) > 0).mean() * G * G, abs=1e-3)
-        elif row.source == "seam" or row.label == 0:
-            assert it["has_loc"] is True and not it["patch_target"].any()
-        else:
-            assert it["has_loc"] is False and not it["patch_target"].any()
-        seen.add((row.source, int(row.label), it["has_loc"]))
-    assert seen == {("rep", 1, True), ("seam", 0, True), ("raw", 0, True), ("raw", 1, False)}
-
-
-def test_loc_mask_flipped_with_image(data_root):
-    t = _loc(data_root)
-    i = int(t.items.index[t.items.source == "rep"][0])
-    got = {}
-    for seed in range(40):  # tìm seed cho cả hai hướng lật, đối chiếu ảnh để biết đã lật hay chưa
-        tt = _loc(data_root, seed)
-        it = tt[i]
-        raw = eval_transform(io_utils.read_image(tt._paths[i]))
-        flipped = not torch.equal(it["image"], raw)
-        got[flipped] = (it["patch_target"], _pool(tt.items.mask_path[i]))
-        if len(got) == 2:
-            break
-    assert set(got) == {True, False}
-    assert not np.array_equal(got[True][1], np.fliplr(got[True][1]))  # mask bất đối xứng, test có nghĩa
-    assert torch.equal(got[True][0], torch.from_numpy(np.fliplr(got[True][1]).copy()))
-    assert torch.equal(got[False][0], torch.from_numpy(got[False][1]))
-
-
-def test_loc_missing_mask_fails_early(data_root, tmp_path):
-    root = _copy(data_root, tmp_path / "r")
-    kept = _loc(root).items
-    victim = Path(kept[kept.source == "rep"].mask_path.iloc[0])
-    victim.unlink()
-    with pytest.raises(FileNotFoundError, match=victim.name):
-        _loc(root)
-    TrainList(root, "raw_aug_filt", 0, 0.0, 95)  # arm không loc không đọc mask
-
-
-def test_loc_grid_not_divisible(data_root):
-    with pytest.raises(ValueError, match="lưới"):  # lỗi lúc dựng, không phải giữa epoch
-        TrainList(data_root, "raw_aug_filt_loc", 0, 0.0, 95, grid=15)
-    TrainList(data_root, "raw_aug_filt", 0, 0.0, 95, grid=15)  # arm không loc không đọc mask
+def test_trainlist_rejects_old_arms(data_root):
+    for old in ("raw_aug_filt", "raw_aug_filt_loc", "raw_rep_filt"):
+        with pytest.raises(ValueError):
+            TrainList(data_root, old, 0, 0.5, 95)
 
 
 def test_train_transform_rng_unchanged():

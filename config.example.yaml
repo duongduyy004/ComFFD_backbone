@@ -1,7 +1,7 @@
-# Ví dụ config cho ffd.config.load_train_config (v2, không prereg). Trạng thái: chưa chạy thử trên GPU.
+# Ví dụ config cho ffd.config.load_train_config (không prereg). Trạng thái: chưa chạy thử trên GPU.
 data_root: F:/DeepFakeData/duy_output/compsynth_ff   # = out_root của preprocessing
 ckpt_root: checkpoints/clip   # nơi lưu checkpoint/kết quả; run nằm ở ckpt_root/<run_name>
-arm: raw              # raw (ảnh raw train) | raw_aug (raw train + mọi ảnh manifest_aug)
+arm: raw              # raw | raw_aug (+ mọi rep/seam) | raw_rep (raw_aug bỏ seam); main tự đặt từng arm
 run_name: null        # null -> dùng tên arm
 seed: 0
 model_name: openai/clip-vit-large-patch14

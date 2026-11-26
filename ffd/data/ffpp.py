@@ -1,7 +1,9 @@
 """Đọc dữ liệu đã tiền xử lý TỪ ĐĨA (không import preprocessing). Hợp đồng do preprocess_ffpp.py sinh:
 
-<data_root>/ffpp/{manifest_raw.parquet, manifest_aug.parquet, drops.parquet, params.json}, ảnh PNG 224x224 tại `path`
+<data_root>/ffpp/{manifest_raw.parquet, manifest_aug.parquet, drops.parquet, params.json}, ảnh tại `path`
 (posix, tương đối với <data_root>/ffpp); <data_root>/celebdf/{manifest.parquet, drops.parquet}.
+Ảnh JPEG q95 ở kích thước gốc của crop (cột `w`, `h`, `jpeg_q`), mask PNG cùng kích thước; detector resize khi nạp
+(`transforms.to_size`).
 `video_id` của video fake FF++ (ví dụ "071_054") KHÔNG duy nhất giữa các method, nên `frames()` trả
 `video_id = "<method>/<video_id>"` và giữ bản gốc ở `src_video_id`.
 Trạng thái: chưa chạy thử trên dữ liệu thật.

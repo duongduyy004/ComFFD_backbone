@@ -66,7 +66,8 @@ def cls_slots(vit, x: torch.Tensor) -> torch.Tensor:
 
 
 def transform_id() -> str:
-    s = inspect.getsource(T.eval_transform) + inspect.getsource(T._to_tensor) + repr((T.CLIP_MEAN, T.CLIP_STD))
+    s = (inspect.getsource(T.eval_transform) + inspect.getsource(T.to_size) + inspect.getsource(T._to_tensor)
+         + repr((T.CLIP_MEAN, T.CLIP_STD, T.SIZE)))
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 

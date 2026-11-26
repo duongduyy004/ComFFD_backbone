@@ -43,7 +43,6 @@ class ClipLoraTrunk(nn.Module):
             vit = CLIPVisionModel.from_pretrained(model_name, revision=model_revision)
             self.commit = resolve_commit(model_name, model_revision)
         self.dim = vit.config.hidden_size
-        self.grid = vit.config.image_size // vit.config.patch_size
         self.num_layers = vit.config.num_hidden_layers
         self.tap_layers = tuple(tap_layers)
         bad = [l for l in self.tap_layers if not 1 <= l <= self.num_layers]
@@ -58,19 +57,8 @@ class ClipLoraTrunk(nn.Module):
                           target_modules=list(lora_targets), bias="none")
         self.base = get_peft_model(vit, lcfg)
 
-    @property
-    def post_layernorm(self):
-        """LayerNorm cuối của ViT (transformers 5: ở CLIPVisionModel; bản cũ: dưới .vision_model)."""
-        m = self.base.base_model.model
-        return getattr(m, "vision_model", m).post_layernorm
-
-    def forward(self, x, patch_tokens: bool = False):
-        """patch_tokens=True thêm "tokens" = post_layernorm(last_hidden_state[:, 1:]) [B, G*G, dim] (row-major).
-        Mặc định False: đường cls/patch không đổi."""
+    def forward(self, x):
         want = bool(self.tap_layers)
         o = self.base(pixel_values=x, output_hidden_states=want)
         patch = {l: o.hidden_states[l][:, 1:] for l in self.tap_layers} if want else {}
-        out = {"cls": o.pooler_output, "patch": patch}
-        if patch_tokens:
-            out["tokens"] = self.post_layernorm(o.last_hidden_state[:, 1:])
-        return out
+        return {"cls": o.pooler_output, "patch": patch}
