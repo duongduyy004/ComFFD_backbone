@@ -1,4 +1,4 @@
-"""Smoke ViT-L thật trên GPU (chạy với --run-gpu). Trạng thái: chưa chạy thử trên GPU."""
+"""Smoke backbone thật trên GPU (chạy với --run-gpu). Trạng thái: chưa chạy thử trên GPU."""
 import json
 import os
 from pathlib import Path

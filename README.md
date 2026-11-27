@@ -1,4 +1,4 @@
-# ffd: detector CLIP ViT-L/14 (224) + LoRA (CompFFD)
+# ffd: detector CLIP ViT-B/16 (224) + LoRA (CompFFD)
 
 So sánh ba arm huấn luyện trên FF++ (`ffd.config.ARMS`, thứ tự cố định):
 
@@ -50,7 +50,13 @@ Giá trị trong `config.example.yaml`:
 
 - `lr: 1.0e-4`: theo run thử `lr1e-4_p0.5`, AUC frame val 0.9954 sau 3 epoch (16/11).
 - `p_jpeg: 0.5`.
-- `grad_checkpointing: false`: tắt nhanh hơn ~21%, VRAM ~8.8 GB (smoke 16/11). Khóa này **không vào
+- `model_name: openai/clip-vit-base-patch16` (86M, 12 tầng, dim 768, 196 patch). Đổi từ ViT-L/14 ngày 27/11 cho
+  nhẹ hơn; bản ViT-L ở tag `detector_v1`.
+- Tham số theo ViT-B (27/11): `max_epochs` 30 -> 15 (v1 ViT-L dừng ở epoch 8–13, best 4–8, nên lịch cosine 30 epoch
+  không bao giờ giảm lr), `num_workers` 4 -> 8. Giữ `lr` 1e-4, `batch_size` 32, LoRA r16/alpha16 trên q/v, `patience` 5,
+  `warmup_frac` 0.05. Không tăng lr: v1 đã quá khớp nhanh (BCE val tăng sau epoch 3–4). Muốn kiểm lr thì chỉ so trên
+  FF++ val (xem `ke_hoach_run_v2_2026-11-26.md` mục 6).
+- `grad_checkpointing: false`: số đo nhanh hơn ~21%, VRAM ~8.8 GB là của ViT-L (16/11); ViT-B chưa đo. Khóa này **không vào
   `config_hash`** (không đổi phép toán, chỉ đổi bộ nhớ/tốc độ), cùng `data_root`, `ckpt_root`, `num_workers`,
   `run_name`.
 
@@ -81,7 +87,7 @@ $env:FFD_REAL_CONFIG = "config.yaml"; python -m pytest -q --run-gpu tests/test_s
 
 PowerShell, thư mục `detector/`, đã activate `.venv`.
 
-1. **smoke** (GPU, ViT-L thật): vài bước train, in giây/bước, VRAM đỉnh, `model_commit`; chép 16 ảnh `rep` + 16 ảnh
+1. **smoke** (GPU, backbone thật): vài bước train, in giây/bước, VRAM đỉnh, `model_commit`; chép 16 ảnh `rep` + 16 ảnh
    `seam` vào `<ckpt_root>/smoke/samples/` để duyệt bằng mắt. Ảnh giờ phải giải mã JPEG và resize: xem giây/bước để
    chọn `num_workers`.
    ```powershell
@@ -191,8 +197,9 @@ python -m ffd.features --config config.yaml --check-against checkpoints/clip/raw
 ```
 
 Ghi `<data_root>/features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.json}` cho `train` (raw train),
-`val`, `ffpp_test`, `celebdf`. `cls.npy` = memmap fp16 `[N, 25, 1024]`: slot 0..23 = CLS của `hidden_states[1..24]`
-(chưa LayerNorm), slot 24 = `pooler_output` (đầu vào head của `raw`). Cả bốn dataset ≈ **9.7 GB**. Ảnh qua
+`val`, `ffpp_test`, `celebdf`. `cls.npy` = memmap fp16 `[N, L+1, D]` (ViT-B/16: `[N, 13, 768]`): slot 0..L-1 = CLS của `hidden_states[1..L]`
+(chưa LayerNorm), slot L = `pooler_output` (đầu vào head của `raw`). Cả bốn dataset ≈ **3.8 GB** với ViT-B/16
+(ước tính; ViT-L đo được 9.7 GB). Ảnh qua
 `eval_transform`, không tăng cường. Ngắt giữa chừng thì chạy lại lệnh, tiếp từ khối cuối đã ghi (`state.json`);
 `meta.json` chỉ ghi khi xong (kèm kiểm: tính lại batch đầu với cùng `--batch-size` lúc trích, lệch pooler > 1e-2 · max(1, |giá trị|) -> lỗi). Thư mục cache
 có commit, manifest, transform, N hoặc `precision` khác -> `ValueError` (xóa thư mục hoặc đổi `--feat-root`).

@@ -1,11 +1,11 @@
 """Cache đặc trưng CLS của CLIP ViT đóng băng (spec v6, mục 2.1). Chưa chạy thử trên dữ liệu thật.
 
-Mỗi frame lưu L + 1 slot (ViT-L: 25 slot x 1024): slot l-1 = CLS của hidden_states[l] (l = 1..L, residual stream,
+Mỗi frame lưu L + 1 slot (ViT-B/16: 13 slot x 768; ViT-L: 25 x 1024): slot l-1 = CLS của hidden_states[l] (l = 1..L, residual stream,
 chưa LayerNorm), slot L = pooler_output (CLS tầng cuối sau post_layernorm, đúng đầu vào head của arm `raw`).
 Tính fp32 (không autocast; CUDA mặc định bật TF32, tắt bằng --no-tf32; `precision` nằm trong key), lưu fp16.
 
 Bố cục `<feat_root>/<commit>/<dataset>/` (`feat_root` mặc định `<data_root>/features/clip`) (dataset ∈ train, val, ffpp_test, celebdf):
-- `cls.npy`: memmap fp16 [N, L+1, D]; ViT-L cả 4 dataset ≈ 9.7 GB.
+- `cls.npy`: memmap fp16 [N, L+1, D]; ViT-L cả 4 dataset ≈ 9.7 GB; ViT-B/16 ≈ 3.8 GB (ước tính theo tỉ lệ 13·768 / 25·1024).
 - `index.parquet`: video_id, frame_idx, label, method, path; cùng thứ tự `cls.npy` và `ffpp.frames()`.
 - `state.json`: {"key": ..., "n_done": int}; cập nhật sau mỗi khối đã flush (chạy tiếp từ n_done).
 - `meta.json`: ghi SAU CÙNG; có file này = cache hoàn tất. Gồm key + n_videos_dropped, phiên bản, seconds, verify.

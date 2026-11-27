@@ -16,6 +16,7 @@ from synth_feats import make_feat_dir
 def test_slots_for():
     assert P.slots_for("probe_last", 24, None) == (24,)
     assert P.slots_for("probe_multi", 24, None) == (7, 11, 15, 19, 23)
+    assert P.slots_for("probe_multi", 12, None) == (3, 5, 7, 9, 11)
     assert P.slots_for("probe_gate", 24, None) == tuple(range(24))
     assert P.slots_for("probe_layer", 24, 12) == (11,)
     with pytest.raises(ValueError):

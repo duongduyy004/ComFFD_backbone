@@ -1,4 +1,4 @@
-"""Smoke trên GPU với ViT-L thật: đo VRAM đỉnh, giây/bước; chép ảnh rep/seam để duyệt bằng mắt.
+"""Smoke trên GPU với backbone thật (model_name): đo VRAM đỉnh, giây/bước; chép ảnh rep/seam để duyệt bằng mắt.
 
 Ghi `<ckpt_root>/smoke/smoke.json` (peak_vram_gb, sec_per_step, batch_size, steps, model_revision, model_commit) và
 `<ckpt_root>/smoke/samples/{rep,seam}_XX.<đuôi gốc>` (16 ảnh mỗi loại, chép nguyên file, trải đều theo manifest_aug).
@@ -47,7 +47,7 @@ def smoke(cfg: TrainConfig, steps: int) -> Path:
     if steps < 2:
         raise ValueError(f"steps phải >= 2 (bỏ bước đầu khỏi thời gian), nhận {steps}")
     if not torch.cuda.is_available():
-        raise RuntimeError("smoke cần CUDA (ViT-L thật).")
+        raise RuntimeError("smoke cần CUDA (backbone thật).")
     out = Path(cfg.ckpt_root) / "smoke"
     for kind in ("rep", "seam"):
         dump_samples(cfg.data_root, kind, out / "samples")

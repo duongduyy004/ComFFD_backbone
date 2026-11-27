@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     t = with_config("train", _cmd_train, "train một run (<ckpt_root>/<run_name>)")
     t.add_argument("--resume", action="store_true", help="chạy tiếp từ last.pt")
     t.add_argument("--force", action="store_true", help="xóa kết quả cũ của run rồi chạy lại")
-    s = with_config("smoke", _cmd_smoke, "vài bước train ViT-L thật trên GPU: giây/bước, VRAM đỉnh, ảnh mẫu")
+    s = with_config("smoke", _cmd_smoke, "vài bước train backbone thật trên GPU: giây/bước, VRAM đỉnh, ảnh mẫu")
     s.add_argument("--steps", type=int, default=50)
 
     e = sp.add_parser("eval", parents=[common], help="chấm best.pt của một run -> result.json")

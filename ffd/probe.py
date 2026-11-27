@@ -2,7 +2,7 @@
 
 Arm (slot theo ffd.features: slot l-1 = CLS hidden_states[l], slot L = pooler_output):
 - probe_last: pooler_output, tuyến tính.
-- probe_multi: CLS tầng MULTI_LAYERS (8, 12, 16, 20, 24; residual, không phải pooler), chuẩn hóa từng chiều, nối, tuyến tính.
+- probe_multi: CLS tầng round(L*k/6), k = 2..6 (ViT-L 8..24, ViT-B 4..12; residual, không phải pooler), chuẩn hóa từng chiều, nối, tuyến tính.
 - probe_gate: CLS cả L tầng, trọng số softmax alpha theo tầng (khởi tạo đều) -> tổng có trọng số -> tuyến tính.
 - probe_layer: một tầng `layer` (bảng từng tầng, CHỈ MÔ TẢ, không dùng để chọn tầng).
 Huấn luyện: BCE, tỉ lệ lớp tự nhiên, AdamW lr 1e-3, batch 4096, tối đa 50 epoch, patience 5 theo BCE val; weight decay
@@ -33,7 +33,12 @@ from .tables import write_text_atomic
 from .train import _bce
 
 PROBE_ARMS = ("probe_last", "probe_multi", "probe_gate", "probe_layer")
-MULTI_LAYERS = (8, 12, 16, 20, 24)
+MULTI_FRACS = (2, 3, 4, 5, 6)  # phần sáu của số tầng L
+
+
+def multi_layers(num_layers: int) -> tuple[int, ...]:
+    """Tầng (1-based) cho probe_multi: round(L*k/6), k = 2..6. L=24 -> (8,12,16,20,24); L=12 -> (4,6,8,10,12)."""
+    return tuple(sorted({max(1, round(num_layers * k / 6)) for k in MULTI_FRACS}))
 WD_GRID = (1e-4, 1e-3, 1e-2)
 LR = 1e-3
 BATCH = 4096
@@ -51,10 +56,7 @@ def slots_for(arm: str, num_layers: int, layer: int | None) -> tuple[int, ...]:
     if arm == "probe_last":
         return (num_layers,)
     if arm == "probe_multi":
-        bad = [l for l in MULTI_LAYERS if l > num_layers]
-        if bad:
-            raise ValueError(f"MULTI_LAYERS {bad} vượt số tầng {num_layers}")
-        return tuple(l - 1 for l in MULTI_LAYERS)
+        return tuple(l - 1 for l in multi_layers(num_layers))
     if arm == "probe_gate":
         return tuple(range(num_layers))
     if arm == "probe_layer":
@@ -104,7 +106,7 @@ def _check_cache_consistent(feat_dir) -> None:
 
 def _slot_source(cls, slots, max_bytes: int = SLOT_RAM_MAX, chunk: int = 4096):
     """(nguồn, sl). Slot chọn nhỏ hơn max_bytes -> nạp fp16 [N, n_slots, D] vào RAM một lần, sl = None (tránh đọc lại
-    cả 25 slot từ đĩa mỗi epoch). Lớn hơn (vd probe_gate) -> giữ memmap, sl = list(slots)."""
+    cả L+1 slot từ đĩa mỗi epoch). Lớn hơn (vd probe_gate) -> giữ memmap, sl = list(slots)."""
     s = list(slots)
     if len(cls) * len(s) * cls.shape[2] * 2 > max_bytes:
         return cls, s
@@ -197,7 +199,7 @@ def run_probe(feat_dir, ckpt_root, arm: str, *, seed: int = 0, layer: int | None
     slots = slots_for(arm, int(tr_meta["num_layers"]), layer)
     run = Path(ckpt_root) / _run_name(arm, seed, layer)
     constants = {"lr": LR, "batch": BATCH, "max_epochs": MAX_EPOCHS, "patience": PATIENCE, "wd_grid": list(WD_GRID),
-                 "multi_layers": list(MULTI_LAYERS)}
+                 "multi_layers": list(multi_layers(int(tr_meta["num_layers"])))}
     if (run / "run_info.json").exists():
         old = json.loads((run / "run_info.json").read_text(encoding="utf-8"))
         if old.get("constants") != constants or old.get("slots") != list(slots) or old.get("feat_meta") != tr_meta:

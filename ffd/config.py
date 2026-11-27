@@ -31,7 +31,7 @@ class TrainConfig:
     arm: Literal["raw", "raw_aug", "raw_rep"] = "raw"
     run_name: str | None = None  # None -> dùng arm
     seed: int = 0
-    model_name: str = "openai/clip-vit-large-patch14"
+    model_name: str = "openai/clip-vit-base-patch16"  # ViT-B/16 (86M, 12 tầng, 768); đổi từ ViT-L/14 ngày 27/11
     model_revision: str | None = None
     lora_r: int = 16
     lora_alpha: int = 16
@@ -39,16 +39,16 @@ class TrainConfig:
     lora_targets: tuple = ("q_proj", "v_proj")
     tap_layers: tuple = ()
     head: str = "binary"
-    grad_checkpointing: bool = False  # tắt nhanh hơn ~21%, VRAM ~8.8 GB (smoke 16/11); ngoài hash
+    grad_checkpointing: bool = False  # không đổi phép toán, chỉ đổi bộ nhớ/tốc độ; ngoài hash
     batch_size: int = 32
     lr: float = 1e-4  # theo run thử lr1e-4_p0.5 (16/11); khớp config.example.yaml
     weight_decay: float = 0.01
     warmup_frac: float = 0.05
-    max_epochs: int = 30
+    max_epochs: int = 15  # ViT-L/v1: best epoch 4–8, dừng ở 8–13 -> cosine 30 epoch không kịp giảm lr (27/11)
     patience: int = 5
     p_jpeg: float = 0.5
     jpeg_q: int = 95
-    num_workers: int = 4
+    num_workers: int = 8  # ViT-B nhanh hơn ViT-L ~3 lần mỗi bước -> đọc ảnh dễ thành nút cổ chai
 
 
 def load_train_config(path, overrides: dict | None = None) -> TrainConfig:

@@ -107,9 +107,9 @@ def test_head_registry_and_binary_loss():
 
 @pytest.mark.gpu
 def test_real_vit_l_loads():
-    m = ClipLoraTrunk("openai/clip-vit-large-patch14", 16, 16, 0.0, ("q_proj", "v_proj"), (8, 16, 24), False)
+    m = ClipLoraTrunk("openai/clip-vit-base-patch16", 16, 16, 0.0, ("q_proj", "v_proj"), (4, 8, 12), False)
     out = m(torch.randn(1, 3, 224, 224))
-    assert out["cls"].shape == (1, 1024) and out["patch"][8].shape == (1, 256, 1024)
+    assert out["cls"].shape == (1, 768) and out["patch"][4].shape == (1, 196, 768)
 
 
 def test_detector_checkpointing_follows_cfg(tiny):
@@ -152,8 +152,8 @@ def test_from_pretrained_gets_revision_and_records_commit(tiny, monkeypatch):
     monkeypatch.setattr(CLIPVisionModel, "from_pretrained", staticmethod(fake))
     monkeypatch.setattr(ffd.backbone, "resolve_commit", lambda n, r: f"sha-of-{n}@{r}")
     d = Detector(cfg(model_revision="c0ffee"))
-    assert seen == {"name": "openai/clip-vit-large-patch14", "revision": "c0ffee"}
-    assert d.trunk.commit == "sha-of-openai/clip-vit-large-patch14@c0ffee"
+    assert seen == {"name": "openai/clip-vit-base-patch16", "revision": "c0ffee"}
+    assert d.trunk.commit == "sha-of-openai/clip-vit-base-patch16@c0ffee"
     assert Detector(cfg(), vision_config=tiny["vision_config"]).trunk.commit == "local"
 
 

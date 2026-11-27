@@ -15,7 +15,7 @@ def wr(tmp_path, text="data_root: D:/x\n"):
 def test_defaults(tmp_path):
     c = load_train_config(wr(tmp_path))
     assert (c.model_name, c.max_epochs, c.patience, c.p_jpeg, c.jpeg_q, c.arm) == \
-        ("openai/clip-vit-large-patch14", 30, 5, 0.5, 95, "raw")
+        ("openai/clip-vit-base-patch16", 15, 5, 0.5, 95, "raw")
     assert run_name_of(c) == "raw" and ARMS == ("raw", "raw_aug", "raw_rep")
     assert isinstance(c.data_root, Path) and isinstance(c.ckpt_root, Path)
     assert c.ckpt_root == Path("checkpoints/clip") and c.lora_targets == ("q_proj", "v_proj")
