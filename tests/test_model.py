@@ -8,7 +8,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("transformers")
 pytest.importorskip("peft")
 
-from ffd.backbone import ClipLoraTrunk  # noqa: E402
+from ffd.backbone import LoraTrunk  # noqa: E402
 from ffd.config import TrainConfig  # noqa: E402
 from ffd.heads import HEADS, build_head, register_head  # noqa: E402
 from ffd.model import Detector  # noqa: E402
@@ -25,16 +25,46 @@ def snapshot_base(d):
 
 
 def test_tap_layer_indices(tiny):
-    m = ClipLoraTrunk(**tiny, tap_layers=(8, 16, 24))
+    m = LoraTrunk(**tiny, tap_layers=(8, 16, 24))
     x = torch.randn(2, 3, 224, 224)
     out = m(x)
-    hs = m.base(x, output_hidden_states=True).hidden_states
+    hs = m.base(pixel_values=m.norm(x), output_hidden_states=True).hidden_states
     assert torch.allclose(out["patch"][16], hs[16][:, 1:]) and out["patch"][8].shape[1] == 256
     assert out["cls"].shape == (2, 32) and set(out["patch"]) == {8, 16, 24}
 
 
+def test_trunk_normalizes_input(tiny):
+    """Transform trả RGB [0, 1]; trunk chuẩn hóa bằng image_mean/std của config trước khi vào backbone."""
+    m = LoraTrunk(**tiny, tap_layers=(), image_mean=(0.5, 0.25, 0.1), image_std=(0.5, 0.5, 0.25)).eval()
+    x = torch.rand(2, 3, 224, 224)
+    want = m.base(pixel_values=(x - torch.tensor([0.5, 0.25, 0.1]).view(1, 3, 1, 1))
+                  / torch.tensor([0.5, 0.5, 0.25]).view(1, 3, 1, 1)).pooler_output
+    assert torch.allclose(m(x)["cls"], want, atol=1e-5)
+    assert not any(k.startswith("norm.") for k in m.state_dict())  # mean/std không vào checkpoint
+
+
+def test_backbone_switch_by_config_only(tiny):
+    """Backbone khác họ (DINOv2 tí hon, MINH HỌA) chỉ bằng khóa config: model_class, lora_targets, image_mean/std."""
+    from transformers import Dinov2Config
+
+    vc = Dinov2Config(hidden_size=32, intermediate_size=37, num_hidden_layers=6, num_attention_heads=4,
+                      image_size=224, patch_size=14)
+    c = cfg(model_class="Dinov2Model", model_name="local-dino", lora_targets=("q_proj", "v_proj"),
+            image_mean=(0.485, 0.456, 0.406), image_std=(0.229, 0.224, 0.225), tap_layers=(3, 6))
+    d = Detector(c, vision_config=vc)
+    out = d.trunk(torch.rand(2, 3, 224, 224))
+    assert d.trunk.dim == 32 and d.trunk.num_layers == 6 and out["patch"][6].shape == (2, 256, 32)
+    assert d(torch.rand(2, 3, 224, 224))["logit"].shape[0] == 2
+    assert any("lora_" in n for n, p in d.named_parameters() if p.requires_grad)
+
+
+def test_unknown_model_class(tiny):
+    with pytest.raises(ValueError, match="model_class"):
+        LoraTrunk(**tiny, tap_layers=(), model_class="NoSuchModel")
+
+
 def test_no_tap_layers(tiny):
-    out = ClipLoraTrunk(**tiny, tap_layers=())(torch.randn(1, 3, 224, 224))
+    out = LoraTrunk(**tiny, tap_layers=())(torch.randn(1, 3, 224, 224))
     assert out["patch"] == {} and out["cls"].shape == (1, 32)
 
 
@@ -79,7 +109,7 @@ def test_trainable_state_roundtrip(tiny):
 
 def test_grad_checkpointing_runs(tiny):
     kw = dict(tiny, grad_checkpointing=True)
-    m = ClipLoraTrunk(**kw, tap_layers=(24,))
+    m = LoraTrunk(**kw, tap_layers=(24,))
     m.train()
     out = m(torch.randn(1, 3, 224, 224))
     out["cls"].sum().backward()
@@ -107,7 +137,7 @@ def test_head_registry_and_binary_loss():
 
 @pytest.mark.gpu
 def test_real_vit_l_loads():
-    m = ClipLoraTrunk("openai/clip-vit-base-patch16", 16, 16, 0.0, ("q_proj", "v_proj"), (4, 8, 12), False)
+    m = LoraTrunk("openai/clip-vit-base-patch16", 16, 16, 0.0, ("q_proj", "v_proj"), (4, 8, 12), False)
     out = m(torch.randn(1, 3, 224, 224))
     assert out["cls"].shape == (1, 768) and out["patch"][4].shape == (1, 196, 768)
 

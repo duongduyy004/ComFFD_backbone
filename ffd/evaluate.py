@@ -47,6 +47,9 @@ def _cfg_from_info(info: dict, data_root=None) -> TrainConfig:
         d["data_root"] = Path(data_root)
     for k in ("lora_targets", "tap_layers"):
         d[k] = tuple(d.get(k, ()))
+    for k in ("image_mean", "image_std"):  # run cũ không có khóa -> mặc định của TrainConfig (CLIP)
+        if k in d:
+            d[k] = tuple(d[k])
     return TrainConfig(**d)
 
 

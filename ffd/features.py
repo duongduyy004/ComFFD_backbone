@@ -1,4 +1,4 @@
-"""Cache đặc trưng CLS của CLIP ViT đóng băng (spec v6, mục 2.1). Chưa chạy thử trên dữ liệu thật.
+"""Cache đặc trưng CLS của backbone đóng băng (theo config) (spec v6, mục 2.1). Chưa chạy thử trên dữ liệu thật.
 
 Mỗi frame lưu L + 1 slot (ViT-B/16: 13 slot x 768; ViT-L: 25 x 1024): slot l-1 = CLS của hidden_states[l] (l = 1..L, residual stream,
 chưa LayerNorm), slot L = pooler_output (CLS tầng cuối sau post_layernorm, đúng đầu vào head của arm `raw`).
@@ -28,7 +28,7 @@ import pandas as pd
 import torch
 
 from . import progress
-from .backbone import resolve_commit
+from .backbone import CLIP_MEAN, CLIP_STD, NormalizedVision, load_vision_model, resolve_commit
 from .data import transforms as T
 from .data.ffpp import data_hashes, dropped_videos, frames
 from .guards import allow_read
@@ -44,18 +44,15 @@ _INDEX_COLS = ["video_id", "frame_idx", "label", "method", "path"]
 VERIFY_TOL = 1e-2
 
 
-def _build_model(model_name, model_revision, vision_config):
-    """(CLIPVisionModel đóng băng fp32 ở eval, commit). vision_config (test) -> model ngẫu nhiên seed 0, commit "local"."""
-    from transformers import CLIPVisionModel
-
+def _build_model(model_name, model_revision, vision_config, model_class="CLIPVisionModel",
+                 image_mean=CLIP_MEAN, image_std=CLIP_STD):
+    """(NormalizedVision đóng băng fp32 ở eval, commit). vision_config (test) -> model ngẫu nhiên seed 0, commit "local"."""
     if vision_config is not None:
         torch.manual_seed(0)
-        vit, commit = CLIPVisionModel(vision_config), "local"
-    else:
-        vit = CLIPVisionModel.from_pretrained(model_name, revision=model_revision)
-        commit = resolve_commit(model_name, model_revision)
-    vit.eval().requires_grad_(False)
-    return vit.float(), commit
+    vit, commit = load_vision_model(model_class, model_name, model_revision, vision_config)
+    m = NormalizedVision(vit, image_mean, image_std)
+    m.eval().requires_grad_(False)
+    return m.float(), commit
 
 
 def cls_slots(vit, x: torch.Tensor) -> torch.Tensor:
@@ -65,9 +62,9 @@ def cls_slots(vit, x: torch.Tensor) -> torch.Tensor:
     return torch.stack([o.hidden_states[l][:, 0] for l in range(1, n + 1)] + [o.pooler_output], dim=1).float()
 
 
-def transform_id() -> str:
+def transform_id(image_mean=CLIP_MEAN, image_std=CLIP_STD) -> str:
     s = (inspect.getsource(T.eval_transform) + inspect.getsource(T.to_size) + inspect.getsource(T._to_tensor)
-         + repr((T.CLIP_MEAN, T.CLIP_STD, T.SIZE)))
+         + repr((tuple(image_mean), tuple(image_std), T.SIZE)))
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
@@ -160,7 +157,7 @@ def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_work
     h = data_hashes(data_root)
     n_layers, dim = vit.config.num_hidden_layers, vit.config.hidden_size
     key = {"commit": commit, "manifest_sha256": h["manifest_sha256"]["celebdf" if ds == "celebdf" else "raw"],
-           "params_json_sha256": h["params_json_sha256"], "transform_id": transform_id(), "N": int(len(df)),
+           "params_json_sha256": h["params_json_sha256"], "transform_id": transform_id(vit.norm.mean_t, vit.norm.std_t), "N": int(len(df)),
            "num_layers": int(n_layers), "dim": int(dim), "precision": precision}
     idx = pd.DataFrame({"video_id": df.video_id.astype(str), "frame_idx": df.frame_idx.astype(int),
                         "label": df.label.astype(int), "method": df.method.astype(str),
@@ -228,17 +225,18 @@ def _extract_one(vit, commit, data_root, out_dir: Path, ds, batch_size, num_work
     print(f"[features] {ds}: {len(df)} frame xong ({meta['seconds']} s)", flush=True)
 
 
-def extract_features(data_root, feat_root, *, datasets=FEAT_DATASETS, model_name, model_revision, batch_size=64,
+def extract_features(data_root, feat_root, *, datasets=FEAT_DATASETS, model_name, model_revision,
+                     model_class="CLIPVisionModel", image_mean=CLIP_MEAN, image_std=CLIP_STD, batch_size=64,
                      num_workers=4, chunk=4096, device=None, vision_config=None, max_chunks=None, tf32: bool = True,
                      check_against=None) -> Path:
     """Cache CLS cho `datasets`; trả <feat_root>/<commit>. `max_chunks` chỉ để test mô phỏng ngắt.
-    `check_against` (thư mục run, vd checkpoints/clip/raw): kiểm commit + thứ tự frame TRƯỚC khi forward."""
+    `check_against` (thư mục run, vd backbones/clip_vit_b16/checkpoints/raw): kiểm commit + thứ tự frame TRƯỚC khi forward."""
     datasets = tuple(datasets)
     bad = [d for d in datasets if d not in FEAT_DATASETS]
     if bad or not datasets:
         raise ValueError(f"datasets không hợp lệ {bad}; chỉ {list(FEAT_DATASETS)} (không rỗng)")
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    vit, commit = _build_model(model_name, model_revision, vision_config)
+    vit, commit = _build_model(model_name, model_revision, vision_config, model_class, image_mean, image_std)
     vit.to(device)
     precision = _precision(device, tf32)
     out_dir = Path(feat_root) / commit
@@ -270,20 +268,21 @@ def check_order(index: pd.DataFrame, scores_parquet) -> None:
 def main(argv=None) -> int:
     from .config import load_train_config
 
-    ap = argparse.ArgumentParser(prog="python -m ffd.features", description="Cache CLS CLIP đóng băng (spec v6)")
+    ap = argparse.ArgumentParser(prog="python -m ffd.features", description="Cache CLS backbone đóng băng (spec v6)")
     ap.add_argument("--config", required=True, help="config.yaml của train (data_root, model, num_workers)")
     ap.add_argument("--feat-root", default=None, help="mặc định <data_root>/features/clip")
     ap.add_argument("--datasets", default=",".join(FEAT_DATASETS))
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--device", default=None)
     ap.add_argument("--check-against", default=None,
-                    help="thư mục run (vd checkpoints/clip/raw): kiểm commit và thứ tự frame trước khi trích")
+                    help="thư mục run (vd backbones/clip_vit_b16/checkpoints/raw): kiểm commit và thứ tự frame trước khi trích")
     ap.add_argument("--no-tf32", action="store_true", help="tính fp32 thuần trên CUDA (chậm hơn 2-3 lần)")
     a = ap.parse_args(argv)
     cfg = load_train_config(a.config)
     datasets = tuple(d for d in a.datasets.split(",") if d)
     d = extract_features(cfg.data_root, a.feat_root or default_feat_root(cfg), datasets=datasets, model_name=cfg.model_name,
-                         model_revision=cfg.model_revision, batch_size=a.batch_size, num_workers=cfg.num_workers,
+                         model_revision=cfg.model_revision, model_class=cfg.model_class, image_mean=cfg.image_mean,
+                         image_std=cfg.image_std, batch_size=a.batch_size, num_workers=cfg.num_workers,
                          device=a.device, tf32=not a.no_tf32, check_against=a.check_against)
     print(f"[features] xong: {d}", flush=True)
     return 0

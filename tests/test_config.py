@@ -20,7 +20,18 @@ def test_defaults(tmp_path):
     assert isinstance(c.data_root, Path) and isinstance(c.ckpt_root, Path)
     assert c.ckpt_root == Path("checkpoints/clip") and c.lora_targets == ("q_proj", "v_proj")
     assert c.tap_layers == () and c.batch_size == 32 and c.seed == 0
-    assert c.lr == 1e-4 and c.grad_checkpointing is False  # mặc định khớp config.example.yaml (16/11)
+    assert c.lr == 1e-4 and c.grad_checkpointing is False
+    assert c.model_class == "CLIPVisionModel" and len(c.image_mean) == 3 and len(c.image_std) == 3
+
+
+def test_backbone_keys_validated(tmp_path):
+    c = load_train_config(wr(tmp_path, "data_root: x\nimage_mean: [0.5, 0.5, 0.5]\nimage_std: [0.5, 0.5, 0.5]\n"))
+    assert c.image_mean == (0.5, 0.5, 0.5) and isinstance(c.image_std, tuple)
+    for k, v in (("image_mean", [0.5, 0.5]), ("image_std", [0.5, 0.0, 0.5])):
+        with pytest.raises(ValueError, match=k):
+            load_train_config(wr(tmp_path), {k: v})
+    a, b = load_train_config(wr(tmp_path)), load_train_config(wr(tmp_path), {"model_class": "Dinov2Model"})
+    assert config_hash(a) != config_hash(b)
 
 
 def test_types_and_run_name(tmp_path):
@@ -76,9 +87,18 @@ def test_file_hash(tmp_path):
     assert len(file_hash(p)) == 12 and file_hash(p) == file_hash(p)
 
 
-def test_example_yaml_valid():
-    p = Path(__file__).resolve().parents[1] / "config.example.yaml"
-    c = load_train_config(p)
-    assert c.arm == "raw" and c.data_root == Path("F:/DeepFakeData/duy_output/compsynth_ff")
-    assert (c.lr, c.p_jpeg, c.grad_checkpointing) == (1e-4, 0.5, False)
-    assert "pilot" not in p.read_text(encoding="utf-8")
+def test_backbone_folders_valid():
+    """Mỗi backbones/<tên>/ có config.yaml hợp lệ (ckpt_root = thư mục checkpoints của chính nó), README.md, checkpoints/."""
+    root = Path(__file__).resolve().parents[1]
+    dirs = sorted(d for d in (root / "backbones").iterdir() if d.is_dir())
+    assert {d.name for d in dirs} >= {"clip_vit_b16", "clip_vit_l14"}
+    hashes = set()
+    for d in dirs:
+        assert (d / "README.md").is_file() and (d / "checkpoints").is_dir(), d
+        c = load_train_config(d / "config.yaml")
+        assert c.ckpt_root == Path("backbones") / d.name / "checkpoints", d
+        assert c.arm == "raw" and (c.lr, c.p_jpeg, c.max_epochs) == (1e-4, 0.5, 15)
+        hashes.add(config_hash(c))
+    assert len(hashes) == len(dirs)  # backbone khác -> config_hash khác
+    b16 = load_train_config(root / "backbones/clip_vit_b16/config.yaml")
+    assert b16.model_name == "openai/clip-vit-base-patch16" and b16.model_class == "CLIPVisionModel"

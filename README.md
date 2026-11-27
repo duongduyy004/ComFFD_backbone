@@ -1,4 +1,6 @@
-# ffd: detector CLIP ViT-B/16 (224) + LoRA (CompFFD)
+# ffd: detector backbone + LoRA (CompFFD)
+
+Backbone chọn bằng config, không sửa code: mỗi backbone là một thư mục `backbones/<tên>/` (xem mục Backbone). Mặc định CLIP ViT-B/16.
 
 So sánh ba arm huấn luyện trên FF++ (`ffd.config.ARMS`, thứ tự cố định):
 
@@ -12,7 +14,7 @@ Không lọc, không cân bằng lại ở detector: preprocessing đã kiểm r
 target. Đánh giá trên FF++ val, FF++ test và Celeb-DF; so sánh mức video và tiêu chí ghi trước ở
 `../ke_hoach_run_v2_2026-11-26.md`. Bản detector trước (dữ liệu PNG 224, arm `raw_aug_filt`, `raw_aug_filt_loc`,
 `raw_rep_filt`, lệnh `compare`) giữ ở tag `detector_v1`.
-Trạng thái: code mới chạy test CPU (CLIP tí hon, dữ liệu tổng hợp MINH HỌA); **chưa chạy thử trên GPU**.
+Trạng thái: code mới chạy test CPU (CLIP và DINOv2 tí hon, dữ liệu tổng hợp MINH HỌA); **chưa chạy thử trên GPU**.
 
 ## Cài đặt
 
@@ -31,56 +33,64 @@ python -c "import torch, transformers, cv2; print(torch.__version__, torch.cuda.
 - Không cài torchvision. Detector độc lập với preprocessing: chỉ đọc dữ liệu trên đĩa.
 - Mỗi terminal mới: activate lại rồi gọi `python -m ffd.cli ...` (không dùng `py`).
 
-### Config
+### Backbone
 
-```powershell
-Copy-Item config.example.yaml config.yaml
+```
+backbones/
+  clip_vit_b16/        mặc định: openai/clip-vit-base-patch16 (86M, 12 tầng, dim 768)
+    config.yaml        config đầy đủ (backbone + train + máy)
+    README.md          model, số đo smoke, ghi chú tham số
+    checkpoints/       ckpt_root của backbone này (nội dung không lên git)
+  clip_vit_l14/        openai/clip-vit-large-patch14 (backbone của tag detector_v1)
 ```
 
-Sửa `data_root` = `out_root` của preprocessing (thư mục chứa `ffpp/` và `celebdf/`). `ckpt_root` mặc định
-`checkpoints/clip`; **dùng thư mục mới**, không dùng lại thư mục chứa run của `detector_v1` (`main` báo lỗi nếu run
-trên đĩa được train trên dữ liệu khác). Mọi khóa đổi được tạm thời bằng `--set k=v` (vd `--set num_workers=8`);
-khóa lạ -> lỗi.
+Lệnh chạy từ thư mục `detector/` và trỏ `--config` vào config của backbone. Đường dẫn `ckpt_root` tương đối với
+`detector/`.
+
+```powershell
+$cfg = "backbones/clip_vit_b16/config.yaml"      # đổi backbone = đổi dòng này
+```
+
+Sửa `data_root` trong config = `out_root` của preprocessing (thư mục chứa `ffpp/` và `celebdf/`), hoặc thêm
+`--set data_root=...`. Mọi khóa đổi được tạm thời bằng `--set k=v`; khóa lạ -> lỗi.
+
+**Thêm backbone mới:** chép một thư mục trong `backbones/`, đổi tên, rồi sửa khối backbone trong config của backbone:
+
+| khóa | ý nghĩa |
+|---|---|
+| `model_class` | class trong `transformers` (vd `CLIPVisionModel`, `Dinov2Model`) |
+| `model_name`, `model_revision` | checkpoint HF và commit ghim (`model_commit` smoke in ra) |
+| `image_mean`, `image_std` | chuẩn hóa ảnh RGB thang [0, 1] của backbone (vd ImageNet cho DINOv2) |
+| `lora_targets` | tên module attention để gắn LoRA (CLIP, DINOv2 trong transformers 5.x: `q_proj`, `v_proj`) |
+| `ckpt_root` | `backbones/<tên>/checkpoints` |
+
+Điều kiện: backbone trả `hidden_states` (token 0 = CLS) và `pooler_output`, config có `num_hidden_layers`,
+`hidden_size`; ảnh vào 224×224. SigLIP (không có CLS token) không thỏa. Chuẩn hóa nằm trong model
+(`ffd/backbone.py::Normalize`); transform chỉ trả ảnh RGB [0, 1]. Mọi khóa backbone vào `config_hash`.
 
 **Dữ liệu:** ảnh JPEG q95 ở kích thước crop gốc, không vuông (cột `w`, `h`, `jpeg_q` trong manifest). Detector resize
 khi nạp (`ffd/data/transforms.py::to_size`): kéo thẳng về 224×224, INTER_AREA khi thu nhỏ cả hai chiều, INTER_CUBIC
 trong các trường hợp còn lại; JPEG lúc train áp sau resize. `main` từ chối dữ liệu thiếu các cột trên.
 
-Giá trị trong `config.example.yaml`:
+Tham số train (giống nhau ở mọi backbone; lý do từng giá trị ghi trong config của backbone):
 
-- `lr: 1.0e-4`: theo run thử `lr1e-4_p0.5`, AUC frame val 0.9954 sau 3 epoch (16/11).
-- `p_jpeg: 0.5`.
-- `model_name: openai/clip-vit-base-patch16` (86M, 12 tầng, dim 768, 196 patch). Đổi từ ViT-L/14 ngày 27/11 cho
-  nhẹ hơn; bản ViT-L ở tag `detector_v1`.
-- Tham số theo ViT-B (27/11): `max_epochs` 30 -> 15 (v1 ViT-L dừng ở epoch 8–13, best 4–8, nên lịch cosine 30 epoch
-  không bao giờ giảm lr), `num_workers` 4 -> 8. Giữ `lr` 1e-4, `batch_size` 32, LoRA r16/alpha16 trên q/v, `patience` 5,
-  `warmup_frac` 0.05. Không tăng lr: v1 đã quá khớp nhanh (BCE val tăng sau epoch 3–4). Muốn kiểm lr thì chỉ so trên
-  FF++ val (xem `ke_hoach_run_v2_2026-11-26.md` mục 6).
-- `grad_checkpointing: false`: số đo nhanh hơn ~21%, VRAM ~8.8 GB là của ViT-L (16/11); ViT-B chưa đo. Khóa này **không vào
-  `config_hash`** (không đổi phép toán, chỉ đổi bộ nhớ/tốc độ), cùng `data_root`, `ckpt_root`, `num_workers`,
-  `run_name`.
+- `lr: 1.0e-4`: theo run thử `lr1e-4_p0.5` trên ViT-L, AUC frame val 0.9954 sau 3 epoch (16/11). Chưa chỉnh lại cho
+  ViT-B; muốn kiểm lr thì chỉ so trên FF++ val (`ke_hoach_run_v2_2026-11-26.md` mục 6).
+- `max_epochs: 15` (27/11): v1 ViT-L dừng ở epoch 8–13, best 4–8, nên lịch cosine 30 epoch không bao giờ giảm lr.
+- `p_jpeg: 0.5`, `batch_size` 32, LoRA r16/alpha16, `patience` 5, `warmup_frac` 0.05.
+- `grad_checkpointing`, `num_workers`: theo máy và backbone; **không vào `config_hash`** (không đổi phép toán), cùng
+  `data_root`, `ckpt_root`, `run_name`.
 
-Mặc định trong `TrainConfig` cũng là `lr` 1e-4, `grad_checkpointing` false. Mọi khóa khác vào `config_hash`: đổi
-giữa các lần chạy main thì run cũ báo lỗi (xóa thư mục run hoặc đổi `ckpt_root`). `main` in khối config hiệu lực
-(`data_root`, `ckpt_root`, `lr`, `p_jpeg`, `batch_size`, `max_epochs`, `patience`, `seed`, `grad_checkpointing`,
-`model_name`, `model_revision`, `num_workers`) ra stdout trước khi train: **đọc lại khối này trước khi để chạy**.
-
-**Nếu `config.yaml` chép từ mẫu cũ** (trước 16/11), sửa tay vì khóa ghi rõ trong file thắng mặc định:
-
-- `lr: 1.0e-4` (mẫu cũ ghi `2.0e-4`);
-- `grad_checkpointing: false` (mẫu cũ ghi `true`);
-- `model_revision`: ghim commit HF (`model_commit` in ra từ `smoke`);
-- xóa mọi khóa hay chú thích liên quan pilot (khóa lạ -> `load_train_config` báo lỗi).
-
-**Run cũ không dùng tiếp được:** commit 16/11 bỏ `grad_checkpointing` khỏi `config_hash`, nên mọi thư mục run tạo
-trước đó (vd `checkpoints/clip/pilot/`, `raw/`/`raw_aug/` dở dang) có `config_hash` khác -> `main`/`eval` báo lỗi.
-Xóa các thư mục đó hoặc đặt `ckpt_root` mới.
+Mọi khóa khác vào `config_hash`: đổi giữa các lần chạy main thì run cũ báo lỗi (xóa thư mục run hoặc đổi
+`ckpt_root`). `main` in khối config hiệu lực (`data_root`, `ckpt_root`, `lr`, `p_jpeg`, `batch_size`, `max_epochs`,
+`patience`, `seed`, `grad_checkpointing`, `model_name`, `model_revision`, `num_workers`) ra stdout trước khi train:
+**đọc lại khối này trước khi để chạy**.
 
 ### Test
 
 ```powershell
 python -m pytest -q                                                                  # CPU, MINH HỌA
-$env:FFD_REAL_CONFIG = "config.yaml"; python -m pytest -q --run-gpu tests/test_smoke_gpu.py   # máy GPU, dữ liệu thật
+$env:FFD_REAL_CONFIG = $cfg; python -m pytest -q --run-gpu tests/test_smoke_gpu.py   # máy GPU, dữ liệu thật
 ```
 
 ## Thứ tự chạy: smoke -> main
@@ -91,13 +101,13 @@ PowerShell, thư mục `detector/`, đã activate `.venv`.
    `seam` vào `<ckpt_root>/smoke/samples/` để duyệt bằng mắt. Ảnh giờ phải giải mã JPEG và resize: xem giây/bước để
    chọn `num_workers`.
    ```powershell
-   python -m ffd.cli smoke --config config.yaml --steps 50 --set num_workers=8
+   python -m ffd.cli smoke --config $cfg --steps 50
    ```
-   **Bắt buộc trước main:** chép `model_commit` in ra vào `model_revision` của `config.yaml` để ghim phiên bản
+   **Bắt buộc trước main:** chép `model_commit` in ra vào `model_revision` của config của backbone để ghim phiên bản
    model (`model_revision` vào `config_hash`; ghim sau khi main đã chạy sẽ làm run cũ báo lỗi config khác).
 2. **main**: kiểm dữ liệu, train + eval R0 → R1 → R2, rồi so sánh và áp tiêu chí.
    ```powershell
-   python -m ffd.cli main --config config.yaml --set num_workers=8 [--B 4000]
+   python -m ffd.cli main --config $cfg [--B 4000]
    if ($LASTEXITCODE -ne 0) { throw "main lỗi" }
    ```
    - Kiểm trước khi train: manifest FF++ raw và Celeb-DF có `w`, `h`, `jpeg_q` (thiếu Celeb-DF -> lỗi); run đã có trên
@@ -128,11 +138,11 @@ tiếp (resume); chưa có gì thì train mới. Run cũ có `config_hash` khác
 Lệnh lẻ (khi cần):
 
 ```powershell
-python -m ffd.cli train --config config.yaml --set arm=raw_rep [--resume | --force]   # một run; không dùng cả hai cờ
-python -m ffd.cli eval --run checkpoints/clip/raw [--datasets val,ffpp_test,celebdf] [--force] [--data-root <data_root trên máy này>]
-python -m ffd.videoboot --config config.yaml --base raw --arms raw_aug raw_rep
-python -m ffd.realfp --config config.yaml --a raw_aug --b raw_rep
-python -m ffd.cli diagnose --ckpt-root checkpoints/clip [--n 2000] [--num-workers 8]   # sau main
+python -m ffd.cli train --config $cfg --set arm=raw_rep [--resume | --force]   # một run; không dùng cả hai cờ
+python -m ffd.cli eval --run backbones/clip_vit_b16/checkpoints/raw [--datasets val,ffpp_test,celebdf] [--force] [--data-root <data_root trên máy này>]
+python -m ffd.videoboot --config $cfg --base raw --arms raw_aug raw_rep
+python -m ffd.realfp --config $cfg --a raw_aug --b raw_rep
+python -m ffd.cli diagnose --ckpt-root backbones/clip_vit_b16/checkpoints [--n 2000] [--num-workers 8]   # sau main
 ```
 
 `ffd.realfp`: ngưỡng t mỗi arm = TPR 0.95 trên fake FF++ val; chỉ số chính = tỉ lệ frame real Celeb-DF có logit >= t,
@@ -141,7 +151,7 @@ cặp khác thì `.md` ghi cảnh báo. Phụ: bản theo video, real FF++ test,
 
 `diagnose` (không train lại): đọc `result.json`, `scores_*.parquet`, `train_log.csv` của `raw` và `raw_aug`, chấm
 `best.pt` của cả hai trên một mẫu ảnh `rep`/`seam` (train) và ảnh real gốc cùng frame, ghi
-`checkpoints/clip/diagnose/{diagnose.md, aug_scores.parquet, low_rep_grid.png}` và in `diagnose.md`. Mục:
+`backbones/clip_vit_b16/checkpoints/diagnose/{diagnose.md, aug_scores.parquet, low_rep_grid.png}` và in `diagnose.md`. Mục:
 AUC theo method; phân bố logit theo lớp (FF++ test, Celeb-DF); tỉ lệ đoán fake của `rep` theo `r` và theo diện tích
 mask; độ tách rep–seam, rep–real, seam–real; best_epoch và đường AUC val. Chỉ để hiểu nguyên nhân, không dùng để
 chỉnh tham số (đã xem kết quả test).
@@ -150,12 +160,12 @@ chỉnh tham số (đã xem kết quả test).
 Run cũ có `run_name` bắt đầu bằng `pilot/` (tạo trước 16/11) chỉ được chấm `val` (chống leakage).
 
 `--no-progress` (mọi lệnh) tắt thanh tiến trình ở stderr; đặt **sau** tên lệnh, vd
-`python -m ffd.cli main --no-progress --config config.yaml`.
+`python -m ffd.cli main --no-progress --config $cfg`.
 
-## Bố cục `checkpoints/clip/`
+## Bố cục `<ckpt_root>` (vd `backbones/clip_vit_b16/checkpoints/`)
 
 ```
-checkpoints/clip/
+backbones/clip_vit_b16/checkpoints/
   smoke/smoke.json, smoke/samples/{rep,seam}_00..15.jpg
   raw/  raw_aug/  raw_rep/                           # run chính
   videoboot.{json,md}                               # gốc raw, arm raw_aug và raw_rep
@@ -187,13 +197,13 @@ AUC theo method).
 ## Cache đặc trưng và probe (spec v6, ngoài `main`)
 
 Spec: `../spec_v6_probe_cache_2026-11-18.md`. Trả lời: CLIP **đóng băng** + head tuyến tính có xếp hạng real/fake
-Celeb-DF tốt hơn `raw` (LoRA) không. Mọi lệnh dùng `--config config.yaml` (lấy `data_root`, `ckpt_root`, `model_name`,
+Celeb-DF tốt hơn `raw` (LoRA) không. Mọi lệnh dùng `--config $cfg` (lấy `data_root`, `ckpt_root`, `model_name`,
 `model_revision`, `num_workers`); không thêm khóa vào `TrainConfig`.
 
 **1. Cache (GPU, một lần):**
 
 ```
-python -m ffd.features --config config.yaml --check-against checkpoints/clip/raw
+python -m ffd.features --config $cfg --check-against backbones/clip_vit_b16/checkpoints/raw
 ```
 
 Ghi `<data_root>/features/clip/<commit>/<dataset>/{cls.npy, index.parquet, state.json, meta.json}` cho `train` (raw train),
@@ -214,8 +224,8 @@ thuần. Sau khối đầu (4096 frame) lệnh in `frame/s` và số phút còn 
 **2. Probe (CPU hoặc GPU, đọc cache):**
 
 ```
-python -m ffd.probe --config config.yaml --arm probe_multi --seed 0          # tương tự probe_last, probe_gate; seed 0, 1, 2
-python -m ffd.probe --config config.yaml --arm probe_layer --layer all       # 24 probe một tầng + probe_layers.md
+python -m ffd.probe --config $cfg --arm probe_multi --seed 0          # tương tự probe_last, probe_gate; seed 0, 1, 2
+python -m ffd.probe --config $cfg --arm probe_layer --layer all       # L probe một tầng (ViT-B: 12) + probe_layers.md
 ```
 
 | arm | đầu vào | head |
@@ -228,7 +238,7 @@ python -m ffd.probe --config config.yaml --arm probe_layer --layer all       # 2
 Chuẩn hóa mean/std theo chiều trên train. Head khởi tạo 0. BCE, tỉ lệ lớp tự nhiên, AdamW lr 1e-3, batch 4096, tối đa
 50 epoch, patience 5 theo BCE val; weight decay chọn trong {1e-4, 1e-3, 1e-2} theo BCE val. FF++ test và Celeb-DF chỉ
 mở sau khi chốt weight decay. Thư mục cache = `--feat-root` (mặc định `<data_root>/features/clip`, cạnh dữ liệu; không làm lệch `data_hashes`) / commit (`model_revision` nếu là
-hash 40 ký tự). Run `checkpoints/clip/<arm>_s<seed>/` (`probe_layer<l>_s<seed>`): `run_info.json` (slot, hằng số,
+hash 40 ký tự). Run `backbones/clip_vit_b16/checkpoints/<arm>_s<seed>/` (`probe_layer<l>_s<seed>`): `run_info.json` (slot, hằng số,
 meta cache, wd chọn, `alpha` của gate), `train_log.csv`, `head.pt`, `scores_{val,ffpp_test,celebdf}.parquet` (cùng cột,
 cùng thứ tự với `ffd.evaluate`, nên `ffd.realfp` dùng được), `result.json`. Có `result.json` thì bỏ qua (`--force` để
 chạy lại); `run_info.json` có hằng số/slot/cache khác -> `ValueError`.
@@ -236,11 +246,11 @@ chạy lại); `run_info.json` có hằng số/slot/cache khác -> `ValueError`.
 **3. So sánh với `raw` (mức video):**
 
 ```
-python -m ffd.videoboot --config config.yaml --base raw --arms probe_last_s0 probe_multi_s0 probe_gate_s0
-python -m ffd.realfp --config config.yaml --a raw --b probe_multi_s0
+python -m ffd.videoboot --config $cfg --base raw --arms probe_last_s0 probe_multi_s0 probe_gate_s0
+python -m ffd.realfp --config $cfg --a raw --b probe_multi_s0
 ```
 
-`ffd.videoboot` ghi `checkpoints/clip/videoboot_<base>.{json,md}` (`--name` để đổi tên; `main` dùng tên `videoboot`): AUC
+`ffd.videoboot` ghi `backbones/clip_vit_b16/checkpoints/videoboot_<base>.{json,md}` (`--name` để đổi tên; `main` dùng tên `videoboot`): AUC
 video và FPR@TPR95 video từng arm trên FF++ test và Celeb-DF, hiệu arm − gốc kèm CI95 (bootstrap phân tầng theo lớp,
 B = 4000, seed 0), tương quan điểm video real giữa gốc và arm.
 Chỉ số chính spec v6: ΔAUC video Celeb-DF của `probe_multi_s0`; đồng chính: ΔFPR@TPR95. Tiêu chí ở spec mục 4.

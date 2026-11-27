@@ -13,7 +13,7 @@ from ffd.smoke import smoke  # noqa: E402
 
 @pytest.mark.gpu
 def test_smoke_real_model(tmp_path):
-    cfg_path = os.environ.get("FFD_REAL_CONFIG", "config.yaml")  # config có data_root trỏ tới dữ liệu thật đã tiền xử lý
+    cfg_path = os.environ.get("FFD_REAL_CONFIG", "backbones/clip_vit_b16/config.yaml")  # config có data_root trỏ tới dữ liệu thật đã tiền xử lý
     cfg = load_train_config(cfg_path, {"ckpt_root": str(tmp_path)})
     p = smoke(cfg, steps=50)
     s = json.loads(p.read_text(encoding="utf-8"))

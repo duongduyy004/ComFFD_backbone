@@ -29,7 +29,7 @@ def data_root(tmp_path_factory):
 
 @pytest.fixture
 def tiny():
-    """Kwargs dựng ClipLoraTrunk nhỏ (random weights, không cần mạng). MINH HỌA, không phải CLIP thật."""
+    """Kwargs dựng LoraTrunk nhỏ (random weights, không cần mạng). MINH HỌA, không phải CLIP thật."""
     pytest.importorskip("transformers")
     from transformers import CLIPVisionConfig
 

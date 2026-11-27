@@ -4,5 +4,9 @@ __pycache__/
 .venv/
 .pytest_cache/
 ffd.egg-info/
-checkpoints/
-config.yaml
+/checkpoints/
+/config.yaml
+/features/
+# checkpoint của từng backbone: giữ thư mục (.gitkeep), bỏ nội dung
+backbones/*/checkpoints/*
+!backbones/*/checkpoints/.gitkeep

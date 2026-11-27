@@ -1,0 +1,34 @@
+# Backbone CLIP ViT-B/16 (mặc định). Chạy mọi lệnh từ thư mục detector/: --config backbones/clip_vit_b16/config.yaml
+# Trạng thái: chưa chạy thử trên GPU.
+data_root: C:\duy_output\preprocessing_v2 # = out_root của preprocessing (sửa theo máy)
+ckpt_root: backbones/clip_vit_b16/checkpoints # run nằm ở ckpt_root/<run_name>
+
+# ---- backbone (đổi backbone = đổi khối này, không sửa code) ----
+model_class: CLIPVisionModel # class trong transformers
+model_name: openai/clip-vit-base-patch16
+model_revision: null # commit HF để ghim phiên bản (chép model_commit smoke in ra); null = mới nhất
+image_mean: [0.48145466, 0.4578275, 0.40821073] # chuẩn hóa CLIP (RGB, thang [0, 1])
+image_std: [0.26862954, 0.26130258, 0.27577711]
+lora_targets: [q_proj, v_proj] # tên module attention của backbone
+
+# ---- train (giống nhau giữa các backbone, trừ khi ghi khác) ----
+arm: raw # raw | raw_aug (+ mọi rep/seam) | raw_rep (raw_aug bỏ seam); main tự đặt từng arm
+run_name: null # null -> dùng tên arm
+seed: 0
+lora_r: 16
+lora_alpha: 16
+lora_dropout: 0.0
+tap_layers: []
+head: binary
+batch_size: 32
+lr: 1.0e-4 # theo run thử lr1e-4_p0.5 trên ViT-L (16/11)
+weight_decay: 0.01
+warmup_frac: 0.05
+max_epochs: 15 # v1 (ViT-L) dừng ở epoch 8–13, best 4–8: 15 để cosine thực sự giảm lr
+patience: 3 # early stopping: AUC frame val không tăng quá 1e-4 trong 5 epoch liên tiếp
+p_jpeg: 0.5 # xác suất nén JPEG lúc train
+jpeg_q: 95 # chất lượng JPEG
+
+# ---- máy (không vào config_hash) ----
+grad_checkpointing: false # VRAM của ViT-B/16 chưa đo (smoke sẽ in)
+num_workers: 8 # ViT-B nhanh nên cần nhiều worker đọc ảnh
