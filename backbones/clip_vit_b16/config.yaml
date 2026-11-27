@@ -6,7 +6,7 @@ ckpt_root: backbones/clip_vit_b16/checkpoints # run nằm ở ckpt_root/<run_nam
 # ---- backbone (đổi backbone = đổi khối này, không sửa code) ----
 model_class: CLIPVisionModel # class trong transformers
 model_name: openai/clip-vit-base-patch16
-model_revision: null # commit HF để ghim phiên bản (chép model_commit smoke in ra); null = mới nhất
+model_revision: 57c216476eefef5ab752ec549e440a49ae4ae5f3 # commit HF (main, sửa lần cuối 04/10/2022), tra từ API HF 27/11
 image_mean: [0.48145466, 0.4578275, 0.40821073] # chuẩn hóa CLIP (RGB, thang [0, 1])
 image_std: [0.26862954, 0.26130258, 0.27577711]
 lora_targets: [q_proj, v_proj] # tên module attention của backbone
